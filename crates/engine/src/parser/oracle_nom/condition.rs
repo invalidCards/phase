@@ -3600,6 +3600,35 @@ fn parse_life_predicate(rest: &str, player: PlayerScope) -> Option<(&str, Static
     None
 }
 
+/// CR 102.2 / CR 102.3 + CR 608.2c: Parse a relationship-qualified predicate
+/// on the current scoped player:
+///
+/// `the player|that player` + `is your opponent` + `and has` +
+/// a hand-size or life-total predicate.
+///
+/// The three grammar axes compose independently. The relationship is returned
+/// as a `PlayerFilter`, while the scalar predicate reuses the existing
+/// `PlayerScope::ScopedPlayer` hand/life productions. The effect-condition
+/// bridge decides whether its parse context actually has a scoped player to
+/// bind; this leaf deliberately does not infer one.
+pub(crate) fn parse_scoped_player_opponent_and_has_condition(
+    input: &str,
+) -> OracleResult<'_, (PlayerFilter, StaticCondition)> {
+    let (rest, _) = alt((
+        tag::<_, _, OracleError<'_>>("the player "),
+        tag("that player "),
+    ))
+    .parse(input)?;
+    let (rest, _) = tag("is your opponent").parse(rest)?;
+    let (rest, _) = tag(" and has ").parse(rest)?;
+    let Some((rest, predicate)) = parse_hand_size_predicate(rest, PlayerScope::ScopedPlayer)
+        .or_else(|| parse_life_predicate(rest, PlayerScope::ScopedPlayer))
+    else {
+        return Err(oracle_err(input));
+    };
+    Ok((rest, (PlayerFilter::Opponent, predicate)))
+}
+
 /// Build a QuantityComparison: qty [comparator] n.
 fn make_quantity_comparison(qty: QuantityRef, comparator: Comparator, n: u32) -> StaticCondition {
     StaticCondition::QuantityComparison {
@@ -9935,6 +9964,88 @@ mod tests {
                 assert_eq!(rhs, QuantityExpr::Fixed { value: 20 });
             }
             other => panic!("expected QuantityComparison, got {other:?}"),
+        }
+    }
+
+    /// CR 102.2 / CR 102.3 + CR 119 + CR 402.1 + CR 608.2c: the scoped-player
+    /// relationship grammar factors subject, opponent relation, connector, and
+    /// scalar tail. Both demonstrative subjects and every existing hand/life
+    /// comparator family produce an exact typed pair with no remainder.
+    #[test]
+    fn scoped_player_opponent_and_has_composes_subject_relation_and_scalar_axes() {
+        let hand = |comparator, value| StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::HandSize {
+                    player: PlayerScope::ScopedPlayer,
+                },
+            },
+            comparator,
+            rhs: QuantityExpr::Fixed { value },
+        };
+        let life = |comparator, value| StaticCondition::QuantityComparison {
+            lhs: QuantityExpr::Ref {
+                qty: QuantityRef::LifeTotal {
+                    player: PlayerScope::ScopedPlayer,
+                },
+            },
+            comparator,
+            rhs: QuantityExpr::Fixed { value },
+        };
+
+        for (input, expected) in [
+            (
+                "the player is your opponent and has four or more cards in hand",
+                hand(Comparator::GE, 4),
+            ),
+            (
+                "that player is your opponent and has one or fewer cards in hand",
+                hand(Comparator::LE, 1),
+            ),
+            (
+                "the player is your opponent and has fewer than seven cards in hand",
+                hand(Comparator::LT, 7),
+            ),
+            (
+                "that player is your opponent and has exactly three cards in hand",
+                hand(Comparator::EQ, 3),
+            ),
+            (
+                "the player is your opponent and has 10 or less life",
+                life(Comparator::LE, 10),
+            ),
+            (
+                "that player is your opponent and has 20 or more life",
+                life(Comparator::GE, 20),
+            ),
+        ] {
+            let (rest, parsed) =
+                parse_scoped_player_opponent_and_has_condition(input).expect("grammar must parse");
+            assert_eq!(rest, "", "{input:?} left remainder {rest:?}");
+            assert_eq!(parsed, (PlayerFilter::Opponent, expected), "{input:?}");
+        }
+    }
+
+    /// Adjacent phrases must not be accepted as the relationship-qualified
+    /// production. The all-consuming wrapper is load-bearing: a valid prefix
+    /// followed by semantic text is a rejection, not a partial success.
+    #[test]
+    fn scoped_player_opponent_and_has_rejects_hostile_adjacent_phrases() {
+        for input in [
+            "a player is your opponent and has four or more cards in hand",
+            "the opponent is your opponent and has four or more cards in hand",
+            "the player isn't your opponent and has four or more cards in hand",
+            "the player is an opponent and has four or more cards in hand",
+            "the player is your opponent or has four or more cards in hand",
+            "the player is your opponent and had four or more cards in hand",
+            "the player is your opponent and has four or more cards in handbag",
+            "the player is your opponent and has four or more cards in hand and draws",
+        ] {
+            assert!(
+                nom::combinator::all_consuming(parse_scoped_player_opponent_and_has_condition)
+                    .parse(input)
+                    .is_err(),
+                "hostile adjacent phrase must fail closed: {input:?}"
+            );
         }
     }
 
