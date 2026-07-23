@@ -2155,12 +2155,14 @@ impl<'a> SpellCast<'a> {
             &mut events,
         )?;
 
-        // Intent the driver matches as it walks slots: object targets are
-        // consumed one per slot (most slots are object slots), while player
-        // targets are reusable across slots (one player may be targeted by
-        // several modes — see `pick_slot_target`).
+        // Intent the driver matches as it walks slots. Object targets are
+        // always consumed one per slot. Player declarations are consumed only
+        // by a multi-target run so `.target_players(&[a, b])` can express two
+        // distinct targets while a single declaration remains reusable across
+        // independent modal slots.
         let mut remaining_objects: Vec<ObjectId> = target_objects;
         let declared_players: Vec<PlayerId> = target_players;
+        let mut remaining_multi_target_players = declared_players.clone();
         let mut remaining_cost_objects: Vec<ObjectId> = cost_objects;
 
         // CR 601.2a: the spell leaves hand only at stack commit. Captured when
@@ -2358,6 +2360,7 @@ impl<'a> SpellCast<'a> {
                 }
                 // CR 601.2c: declare one target per slot, in written order.
                 WaitingFor::TargetSelection {
+                    pending_cast,
                     target_slots,
                     selection,
                     ..
@@ -2366,6 +2369,11 @@ impl<'a> SpellCast<'a> {
                     let choice = pick_slot_target(
                         slot,
                         &mut remaining_objects,
+                        pending_cast
+                            .ability
+                            .multi_target
+                            .as_ref()
+                            .map(|_| &mut remaining_multi_target_players),
                         &declared_players,
                         selection.current_slot,
                     );
@@ -2547,15 +2555,17 @@ impl<'a> CastCommit<'a> {
 /// matching CR 601.2c (targets declared one per slot, in written order).
 ///
 /// Object intent is *consumed* (each declared object satisfies at most one
-/// slot, so distinct exile/destroy targets never alias). Player intent is
-/// *reusable* — the same player is routinely targeted by several modes of one
-/// modal spell (e.g. Kozilek's Command mode 1 scries *and* draws for the same
-/// target player), so a declared player may satisfy multiple player slots.
+/// slot, so distinct exile/destroy targets never alias). A multi-target run
+/// consumes player declarations in order when available; otherwise, player
+/// intent is reusable, letting the same declared player satisfy independent
+/// modal slots (e.g. Kozilek's Command mode 1 scries *and* draws for the same
+/// target player).
 /// Falls back to `None` for optional slots; panics for an unsatisfiable
 /// required slot.
 fn pick_slot_target(
     slot: &crate::types::game_state::TargetSelectionSlot,
     remaining_objects: &mut Vec<ObjectId>,
+    remaining_multi_target_players: Option<&mut Vec<PlayerId>>,
     declared_players: &[PlayerId],
     slot_index: usize,
 ) -> Option<TargetRef> {
@@ -2564,6 +2574,14 @@ fn pick_slot_target(
         .position(|&o| slot.legal_targets.contains(&TargetRef::Object(o)))
     {
         return Some(TargetRef::Object(remaining_objects.remove(pos)));
+    }
+    if let Some(remaining_players) = remaining_multi_target_players {
+        if let Some(pos) = remaining_players
+            .iter()
+            .position(|&player| slot.legal_targets.contains(&TargetRef::Player(player)))
+        {
+            return Some(TargetRef::Player(remaining_players.remove(pos)));
+        }
     }
     if let Some(&player) = declared_players
         .iter()
@@ -2882,6 +2900,7 @@ impl<'a> AbilityActivation<'a> {
                     let choice = pick_slot_target(
                         slot,
                         &mut remaining_objects,
+                        None,
                         &declared_players,
                         selection.current_slot,
                     );
@@ -3106,6 +3125,7 @@ fn drive_resolution(
                 let choice = pick_slot_target(
                     slot,
                     &mut remaining_objects,
+                    None,
                     declared_players,
                     selection.current_slot,
                 );
@@ -3127,6 +3147,7 @@ fn drive_resolution(
                 let choice = pick_slot_target(
                     slot,
                     &mut remaining_objects,
+                    None,
                     declared_players,
                     selection.current_slot,
                 );

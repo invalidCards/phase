@@ -3313,6 +3313,34 @@ fn split_player_scope_chain(
     (scoped, tail)
 }
 
+/// CR 608.2c: A multi-target player subject owns only its same-sentence
+/// continuation chain. A `SequentialSibling` starts an independent instruction
+/// that resolves once after every selected player has completed the subject's
+/// local clauses. This is the target-subject counterpart to
+/// `split_player_scope_chain` above.
+fn split_multi_target_player_chain(
+    ability: &ResolvedAbility,
+) -> (ResolvedAbility, Option<Box<ResolvedAbility>>) {
+    let mut per_target = ability.clone();
+    let tail = detach_after_multi_target_player_local_chain(&mut per_target);
+    (per_target, tail)
+}
+
+/// CR 608.2c: Retain `ContinuationStep` clauses under the current "each target
+/// player" subject, but detach the first independently sequenced instruction.
+fn detach_after_multi_target_player_local_chain(
+    node: &mut ResolvedAbility,
+) -> Option<Box<ResolvedAbility>> {
+    let mut next = node.sub_ability.take()?;
+    if next.sub_link != SubAbilityLink::ContinuationStep {
+        return Some(next);
+    }
+
+    let tail = detach_after_multi_target_player_local_chain(&mut next);
+    node.sub_ability = Some(next);
+    tail
+}
+
 /// CR 608.2e: Collect cross-player equalization quantity references from a
 /// `QuantityExpr`. These are the refs whose value would shift as an APNAP
 /// fan-out mutates the board — `ControlledByEachPlayer` (battlefield extremum)
@@ -3550,6 +3578,23 @@ fn extract_shares_quality_props(
 /// CR 608.2b: Extract the target filter from an effect for SharesQuality validation.
 fn effect_target_filter(effect: &Effect) -> Option<&TargetFilter> {
     effect.target_filter()
+}
+
+/// CR 601.2c: Oracle's `target opponents` lowering can use the dedicated
+/// `TargetFilter::Opponent` player role or a type-less `TypedFilter` constrained
+/// solely by `ControllerRef::Opponent`; `target players` uses
+/// `TargetFilter::Player`. All three select players at announcement and need
+/// the same per-target resolution fan-out.
+fn is_multi_target_player_filter(filter: &TargetFilter) -> bool {
+    match filter {
+        TargetFilter::Player | TargetFilter::Opponent => true,
+        TargetFilter::Typed(typed) => {
+            typed.type_filters.is_empty()
+                && typed.properties.is_empty()
+                && matches!(typed.controller, Some(ControllerRef::Opponent))
+        }
+        _ => false,
+    }
 }
 
 // ── Batch resolution (Tier 3) ────────────────────────────────────────────
@@ -7562,11 +7607,12 @@ fn resolve_chain_body(
         return Ok(());
     }
 
-    // CR 603.3d + CR 601.2c: Multi-target-over-`Player` resolution fan-out.
-    // An "any number of target players each <verb>" trigger/spell announces a
-    // variable number of player targets when it goes on the stack (CR 601.2c,
-    // reached for triggers via CR 603.3d). The chosen player set lands in
-    // `ability.targets` as `TargetRef::Player` entries with `multi_target` set.
+    // CR 603.3d + CR 601.2c: Multi-target player-subject resolution fan-out.
+    // An "any number of target players/opponents each <verb>" trigger/spell
+    // announces a variable number of player targets when it goes on the stack
+    // (CR 601.2c, reached for triggers via CR 603.3d). The chosen player set
+    // lands in `ability.targets` as `TargetRef::Player` entries with
+    // `multi_target` set.
     // Single-player-recipient effect handlers (`Discard`, `Mill`, `LoseLife`)
     // resolve for only the FIRST `TargetRef::Player`, so without this branch a
     // selection of two players discards only one. This fan-out is the missing
@@ -7580,7 +7626,7 @@ fn resolve_chain_body(
     // `multi_target` and changes the effect's target filter, which would
     // otherwise skip this branch and resolve only the first chosen player.
     if ability.multi_target.is_some()
-        && effect_target_filter(&ability.effect) == Some(&TargetFilter::Player)
+        && effect_target_filter(&ability.effect).is_some_and(is_multi_target_player_filter)
     {
         let chosen_players: Vec<PlayerId> = ability
             .targets
@@ -7591,6 +7637,11 @@ fn resolve_chain_body(
             })
             .collect();
         if chosen_players.len() != 1 {
+            // A sentence boundary begins an instruction that is not qualified
+            // by the preceding "each target player" subject. Keep that tail
+            // outside the per-target template so Wheel and Deal's final
+            // "Draw a card" is performed once by its controller.
+            let (per_target, after_fanout) = split_multi_target_player_chain(ability);
             // CR 601.2c: "any number of target players" permits zero targets.
             // CR 608.2c: An ability resolving with zero chosen player targets
             // does nothing — emit `EffectResolved` and stop BEFORE
@@ -7605,6 +7656,9 @@ fn resolve_chain_body(
                     source_id: ability.source_id,
                     subject: None,
                 });
+                if let Some(after_fanout) = after_fanout {
+                    resolve_ability_chain(state, &after_fanout, events, depth + 1)?;
+                }
                 return Ok(());
             }
             // CR 101.4 + CR 608.2c: Resolve the effect once per chosen player in
@@ -7617,7 +7671,7 @@ fn resolve_chain_body(
                 .collect();
             let initial_waiting_for = state.waiting_for.clone();
             for (i, pid) in fanout_players.iter().enumerate() {
-                let mut narrowed = ability.clone();
+                let mut narrowed = per_target.clone();
                 narrowed.targets = vec![TargetRef::Player(*pid)];
                 narrowed.multi_target = None;
                 resolve_ability_chain(state, &narrowed, events, depth + 1)?;
@@ -7629,9 +7683,9 @@ fn resolve_chain_body(
                 // `drain_pending_continuation` after the choice resolves.
                 if state.waiting_for != initial_waiting_for {
                     let remaining = &fanout_players[i + 1..];
-                    let mut tail: Option<Box<ResolvedAbility>> = None;
+                    let mut tail = after_fanout.clone();
                     for &remaining_pid in remaining.iter().rev() {
-                        let mut remaining_narrowed = ability.clone();
+                        let mut remaining_narrowed = per_target.clone();
                         remaining_narrowed.targets = vec![TargetRef::Player(remaining_pid)];
                         remaining_narrowed.multi_target = None;
                         if let Some(prev) = tail {
@@ -7644,6 +7698,11 @@ fn resolve_chain_body(
                     }
                     append_to_pending_continuation(state, tail);
                     break;
+                }
+            }
+            if state.waiting_for == initial_waiting_for {
+                if let Some(after_fanout) = after_fanout {
+                    resolve_ability_chain(state, &after_fanout, events, depth + 1)?;
                 }
             }
             return Ok(());
@@ -23540,6 +23599,92 @@ mod tests {
             state.players[0].hand.len() - p0_hand_before,
             3,
             "controller draws one card per card discarded this way (3 total)"
+        );
+    }
+
+    /// CR 601.2c + CR 608.2c: If a multi-target opponent instruction pauses,
+    /// every remaining opponent must resume before its detached sequential tail
+    /// runs once for the controller.
+    #[test]
+    fn multi_target_opponents_resume_before_controller_sequential_tail() {
+        let mut state = GameState::new(FormatConfig::commander(), 3, 42);
+        for card in 0..3 {
+            create_object(
+                &mut state,
+                CardId(1_000 + card),
+                PlayerId(0),
+                format!("Controller library {card}"),
+                Zone::Library,
+            );
+        }
+        for player in 1..3u8 {
+            for card in 0..2 {
+                create_object(
+                    &mut state,
+                    CardId(u64::from(player) * 100 + card),
+                    PlayerId(player),
+                    format!("P{player} hand {card}"),
+                    Zone::Hand,
+                );
+            }
+        }
+
+        let opponent_filter = TargetFilter::Typed(TypedFilter {
+            type_filters: vec![],
+            controller: Some(ControllerRef::Opponent),
+            properties: vec![],
+        });
+        let mut ability = ResolvedAbility::new(
+            Effect::Discard {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: opponent_filter,
+                selection: crate::types::ability::CardSelectionMode::Chosen,
+                unless_filter: None,
+                filter: None,
+            },
+            vec![
+                TargetRef::Player(PlayerId(1)),
+                TargetRef::Player(PlayerId(2)),
+            ],
+            ObjectId(500),
+            PlayerId(0),
+        );
+        ability.multi_target = Some(crate::types::ability::MultiTargetSpec::unlimited(0));
+        let mut controller_tail = ResolvedAbility::new(
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::Controller,
+            },
+            vec![],
+            ObjectId(500),
+            PlayerId(0),
+        );
+        controller_tail.sub_link = crate::types::ability::SubAbilityLink::SequentialSibling;
+        ability.sub_ability = Some(Box::new(controller_tail));
+
+        let controller_hand_before = state.players[0].hand.len();
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0).unwrap();
+
+        let mut prompted_players = Vec::new();
+        while let WaitingFor::DiscardChoice { player, cards, .. } = &state.waiting_for {
+            let player = *player;
+            let pick = cards[0];
+            crate::game::engine::apply_as_current(
+                &mut state,
+                GameAction::SelectCards { cards: vec![pick] },
+            )
+            .unwrap();
+            prompted_players.push(player);
+        }
+
+        assert_eq!(prompted_players, vec![PlayerId(1), PlayerId(2)]);
+        assert_eq!(state.players[1].graveyard.len(), 1);
+        assert_eq!(state.players[2].graveyard.len(), 1);
+        assert_eq!(
+            state.players[0].hand.len() - controller_hand_before,
+            1,
+            "the detached controller draw runs exactly once after both discards"
         );
     }
 

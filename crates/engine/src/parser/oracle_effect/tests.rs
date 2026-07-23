@@ -11643,6 +11643,72 @@ fn effect_chain_then_conjugated_draws() {
     );
 }
 
+/// CR 601.2c + CR 608.2c: a bare continuation after an "any number of target
+/// opponents each" subject inherits the chosen-player target set. The following
+/// sentence remains a controller-only instruction.
+#[test]
+fn wheel_and_deal_implicit_draw_inherits_each_targeted_opponent() {
+    let def = parse_effect_chain(
+        "Any number of target opponents each discard their hands, then draw seven cards.\nDraw a card.",
+        AbilityKind::Spell,
+    );
+    assert!(
+        def.multi_target.is_some()
+            && def
+                .effect
+                .target_filter()
+                .is_some_and(target_filter_can_target_player),
+        "the first sentence must remain a multi-target player instruction: {def:?}"
+    );
+    let per_opponent_draw = def
+        .sub_ability
+        .as_ref()
+        .expect("discard must continue to the seven-card draw");
+    assert!(
+        matches!(
+            &*per_opponent_draw.effect,
+            Effect::Draw {
+                count: QuantityExpr::Fixed { value: 7 },
+                target: TargetFilter::ParentTarget,
+            }
+        ),
+        "expected the seven-card draw to inherit ParentTarget, got {:?}; full definition: {def:?}",
+        per_opponent_draw.effect
+    );
+    let controller_draw = per_opponent_draw
+        .sub_ability
+        .as_ref()
+        .expect("the second sentence must remain a trailing draw");
+    assert!(matches!(
+        &*controller_draw.effect,
+        Effect::Draw {
+            count: QuantityExpr::Fixed { value: 1 },
+            target: TargetFilter::Controller,
+        }
+    ));
+}
+
+/// CR 608.2c: the lexical conjugation is load-bearing. A fresh imperative
+/// subject (`you`) after the same multi-target head must remain controller-only.
+#[test]
+fn multi_target_player_subject_does_not_capture_explicit_controller_draw() {
+    let def = parse_effect_chain(
+        "Any number of target opponents each discard their hands, then you draw a card.",
+        AbilityKind::Spell,
+    );
+    let controller_draw = def
+        .sub_ability
+        .as_ref()
+        .expect("the explicit controller draw must remain a continuation");
+    assert!(matches!(
+        &*controller_draw.effect,
+        Effect::Draw {
+            count: QuantityExpr::Fixed { value: 1 },
+            target: TargetFilter::Controller,
+        }
+    ));
+}
+
 #[test]
 fn windfall_draw_uses_previous_discard_max_for_each_player() {
     let def = parse_effect_chain(

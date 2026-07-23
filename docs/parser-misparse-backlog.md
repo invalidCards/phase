@@ -1817,7 +1817,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Wandering Wolf
 - Warren Pilferers
 - Wei Assassins
-- Wheel and Deal
 - Wicked Slumber
 - Wildcall
 - Will of the Abzan
