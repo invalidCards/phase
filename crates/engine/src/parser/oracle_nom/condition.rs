@@ -3606,11 +3606,21 @@ fn parse_life_predicate(rest: &str, player: PlayerScope) -> Option<(&str, Static
 /// `the player|that player` + `is your opponent` + `and has` +
 /// a hand-size or life-total predicate.
 ///
-/// The three grammar axes compose independently. The relationship is returned
-/// as a `PlayerFilter`, while the scalar predicate reuses the existing
+/// Three axes compose independently — subject, relation, and scalar predicate.
+/// The relation is a real `alt()` axis (`parse_scoped_player_relation`) yielding
+/// a `PlayerFilter`, and the scalar predicate reuses the existing
 /// `PlayerScope::ScopedPlayer` hand/life productions. The effect-condition
 /// bridge decides whether its parse context actually has a scoped player to
 /// bind; this leaf deliberately does not infer one.
+///
+/// The `" and has "` connector is deliberately fused into this production
+/// rather than delegated to `parse_condition_connective` (the single authority
+/// documented at the top of this module): that combinator is typed
+/// `OracleResult<'_, StaticCondition>`, and `StaticCondition` has no
+/// player-relationship variant — the relation exists only as
+/// `AbilityCondition::ScopedPlayerMatches`. The generic connective therefore
+/// structurally cannot join a relation leg to a scalar leg without a new
+/// `StaticCondition` variant, which is an `add-engine-variant`-gated proposal.
 pub(crate) fn parse_scoped_player_opponent_and_has_condition(
     input: &str,
 ) -> OracleResult<'_, (PlayerFilter, StaticCondition)> {
@@ -3619,14 +3629,27 @@ pub(crate) fn parse_scoped_player_opponent_and_has_condition(
         tag("that player "),
     ))
     .parse(input)?;
-    let (rest, _) = tag("is your opponent").parse(rest)?;
+    let (rest, filter) = parse_scoped_player_relation(rest)?;
     let (rest, _) = tag(" and has ").parse(rest)?;
     let Some((rest, predicate)) = parse_hand_size_predicate(rest, PlayerScope::ScopedPlayer)
         .or_else(|| parse_life_predicate(rest, PlayerScope::ScopedPlayer))
     else {
         return Err(oracle_err(input));
     };
-    Ok((rest, (PlayerFilter::Opponent, predicate)))
+    Ok((rest, (filter, predicate)))
+}
+
+/// CR 102.2 / CR 102.3: the relation axis of a scoped-player predicate —
+/// which topology relation to the printed controller the scoped player must
+/// hold. Mirrors the `parse_condition_connector` shape (`value()` arms inside
+/// an `alt()`), so a further relation is a one-line arm rather than a
+/// restructure.
+fn parse_scoped_player_relation(input: &str) -> OracleResult<'_, PlayerFilter> {
+    alt((value(
+        PlayerFilter::Opponent,
+        tag::<_, _, OracleError<'_>>("is your opponent"),
+    ),))
+    .parse(input)
 }
 
 /// Build a QuantityComparison: qty [comparator] n.

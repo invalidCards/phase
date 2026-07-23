@@ -338,7 +338,14 @@ pub(crate) fn matches_player_scope(
                     PlayerFilter::AllExcept { exclude } => {
                         !matches_player_scope(state, p.id, exclude, controller, source_id)
                     }
-                    PlayerFilter::Opponent => p.id != controller,
+                    // CR 102.2 / CR 102.3: "opponent" is a game-topology
+                    // relation, not raw player-ID inequality. In team
+                    // multiplayer a teammate is neither the controller nor an
+                    // opponent, so effect-recipient enumeration must route
+                    // through the canonical `players::is_opponent` authority.
+                    PlayerFilter::Opponent => {
+                        crate::game::players::is_opponent(state, controller, p.id)
+                    }
                     PlayerFilter::DefendingPlayer => {
                         crate::game::targeting::resolve_event_context_target_for_event_or_state(
                             state,
@@ -351,10 +358,12 @@ pub(crate) fn matches_player_scope(
                         )
                     }
                     PlayerFilter::OpponentLostLife => {
-                        p.id != controller && p.life_lost_this_turn > 0
+                        crate::game::players::is_opponent(state, controller, p.id)
+                            && p.life_lost_this_turn > 0
                     }
                     PlayerFilter::OpponentGainedLife => {
-                        p.id != controller && p.life_gained_this_turn > 0
+                        crate::game::players::is_opponent(state, controller, p.id)
+                            && p.life_gained_this_turn > 0
                     }
                     // CR 104.5 / CR 800.4: Players who lost have left the game;
                     // this filter is quantity-only and has no live effect recipient.
@@ -382,7 +391,7 @@ pub(crate) fn matches_player_scope(
                     ),
                     // CR 508.6: opponent the subject attacked within scope.
                     PlayerFilter::OpponentAttacked { subject, scope } => {
-                        p.id != controller
+                        crate::game::players::is_opponent(state, controller, p.id)
                             && state
                                 .opponent_attacked(*subject, *scope, controller, source_id, p.id)
                     }
@@ -393,7 +402,7 @@ pub(crate) fn matches_player_scope(
                     // never appear in `combat.attackers` for `DefendingPlayer`),
                     // resolved via the shared event-context target resolver.
                     PlayerFilter::OpponentAttackingEnchantedPlayer => {
-                        p.id != controller
+                        crate::game::players::is_opponent(state, controller, p.id)
                             && enchanted_player_anchor(state, source_id).is_some_and(|enchanted| {
                                 state.player_attacked_player_this_combat(p.id, enchanted)
                             })
