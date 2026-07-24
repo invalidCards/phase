@@ -216,6 +216,7 @@ impl AbilityCost {
         state: &GameState,
         player: PlayerId,
         source: ObjectId,
+        ability_index: usize,
     ) -> bool {
         match self {
             AbilityCost::Mana { cost } => {
@@ -224,6 +225,7 @@ impl AbilityCost {
                     state,
                     player,
                     source,
+                    ability_index,
                     cost,
                     &excluded_sources,
                 )
@@ -239,7 +241,9 @@ impl AbilityCost {
                     } if has_tap => {
                         has_enough_tap_creatures(state, player, source, requirement, filter, true)
                     }
-                    other => other.is_payable_for_mana_ability(state, player, source),
+                    other => {
+                        other.is_payable_for_mana_ability(state, player, source, ability_index)
+                    }
                 })
             }
             // Every other kind has no mana-pool component — defer to the
