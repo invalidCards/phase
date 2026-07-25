@@ -1852,12 +1852,12 @@ fn profile_kind_allowed_for_context(
         return Some(kind);
     };
     match kind {
-        ActivatableManaProfileKind::Exact(types)
-            if types
-                .iter()
-                .all(|mana_type| ctx.permits_actual_mana_type(*mana_type)) =>
-        {
-            Some(ActivatableManaProfileKind::Exact(types))
+        ActivatableManaProfileKind::Exact(types) => {
+            let types: Vec<_> = types
+                .into_iter()
+                .filter(|mana_type| ctx.permits_actual_mana_type(*mana_type))
+                .collect();
+            (!types.is_empty()).then_some(ActivatableManaProfileKind::Exact(types))
         }
         ActivatableManaProfileKind::AnyOneColor { count, options } => {
             let options: Vec<_> = options
@@ -1878,15 +1878,17 @@ fn profile_kind_allowed_for_context(
         ActivatableManaProfileKind::CombinationChoices(options) => {
             let options: Vec<_> = options
                 .into_iter()
-                .filter(|combination| {
+                .map(|combination| {
                     combination
                         .iter()
-                        .all(|mana_type| ctx.permits_actual_mana_type(*mana_type))
+                        .copied()
+                        .filter(|mana_type| ctx.permits_actual_mana_type(*mana_type))
+                        .collect::<Vec<_>>()
                 })
+                .filter(|combination| !combination.is_empty())
                 .collect();
             (!options.is_empty()).then_some(ActivatableManaProfileKind::CombinationChoices(options))
         }
-        ActivatableManaProfileKind::Exact(_) => None,
     }
 }
 

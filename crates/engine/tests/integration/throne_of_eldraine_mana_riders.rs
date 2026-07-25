@@ -304,6 +304,46 @@ fn throne_draw_auto_tap_uses_only_chosen_color_sources() {
         "the activation must resolve after auto-tapping only eligible sources"
     );
 
+    // A source may produce an off-color byproduct: only the red unit is spent,
+    // while its blue companion remains in the pool after the activation.
+    let mut mixed_output = GameScenario::new();
+    mixed_output.at_phase(Phase::PreCombatMain);
+    let mixed_throne = add_throne(&mut mixed_output);
+    let signet = mixed_output
+        .add_land_from_oracle(P0, "Izzet Test Signet", "{T}: Add {U}{R}.")
+        .id();
+    let mixed_mountains: Vec<_> = (0..2)
+        .map(|_| mixed_output.add_basic_land(P0, ManaColor::Red))
+        .collect();
+    mixed_output.with_library_top(P0, &["Mixed draw one", "Mixed draw two"]);
+    let mut mixed_runner = mixed_output.build();
+    choose_red(mixed_runner.state_mut(), mixed_throne);
+    let (_, mixed_draw) = throne_ability_indices(mixed_runner.state(), mixed_throne);
+    mixed_runner
+        .act(GameAction::ActivateAbility {
+            source_id: mixed_throne,
+            ability_index: mixed_draw,
+        })
+        .expect("a red unit from a blue-red source plus two Mountains must pay the activation");
+    mixed_runner
+        .act(GameAction::PassPriority)
+        .expect("activator passes priority");
+    mixed_runner
+        .act(GameAction::PassPriority)
+        .expect("opponent passes priority");
+    assert!(mixed_runner.state().objects[&signet].tapped);
+    assert!(mixed_mountains
+        .iter()
+        .all(|mountain| mixed_runner.state().objects[mountain].tapped));
+    assert!(
+        mixed_runner.state().players[P0.0 as usize]
+            .mana_pool
+            .mana
+            .iter()
+            .any(|unit| unit.color == ManaType::Blue),
+        "the unspent blue byproduct must remain in the pool"
+    );
+
     let mut blue_only = GameScenario::new();
     blue_only.at_phase(Phase::PreCombatMain);
     let blue_throne = add_throne(&mut blue_only);
