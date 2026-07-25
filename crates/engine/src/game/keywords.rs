@@ -781,7 +781,7 @@ pub fn activate_ninjutsu(
         &AbilityCost::Mana {
             cost: effective_cost,
         },
-        usize::MAX,
+        None,
         events,
     )
     .map_err(|e| e.to_string())?

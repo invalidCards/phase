@@ -204,7 +204,7 @@ pub(crate) enum PaymentScope<'a> {
         /// CR 106.6: Exact activated ability whose mana cost is being paid.
         /// This builds the live activation payment context, including any
         /// source-chosen-color rider and keyword tag.
-        ability_index: usize,
+        ability_index: Option<usize>,
     },
     /// `ability` is normally the PAYER-ADJUSTED `ResolvedAbility` clone
     /// (controller swapped to the resolved payer, per `effects/pay.rs`). All
@@ -572,7 +572,7 @@ pub fn pay_ability_cost_for_activation(
     player: PlayerId,
     source_id: ObjectId,
     cost: &AbilityCost,
-    ability_index: usize,
+    ability_index: Option<usize>,
     events: &mut Vec<GameEvent>,
 ) -> Result<PaymentOutcome, EngineError> {
     pay_ability_cost_for_activation_with_cost_move_replacement(
@@ -590,7 +590,7 @@ fn pay_ability_cost_for_activation_with_cost_move_replacement(
     player: PlayerId,
     source_id: ObjectId,
     cost: &AbilityCost,
-    ability_index: usize,
+    ability_index: Option<usize>,
     events: &mut Vec<GameEvent>,
 ) -> Result<PaymentOutcome, EngineError> {
     let excluded_sources = ability_mana_payment_excluded_sources(cost, source_id);
@@ -2240,7 +2240,7 @@ mod tests {
             let excluded = ability_mana_payment_excluded_sources(&cost, src);
             let scope = PaymentScope::Activation {
                 excluded_sources: &excluded,
-                ability_index: 0,
+                ability_index: Some(0),
             };
             assert!(
                 can_pay(&scenario.state, P0, src, &cost, &scope),
@@ -2269,7 +2269,7 @@ mod tests {
         let excluded = ability_mana_payment_excluded_sources(&cost, src);
         let scope = PaymentScope::Activation {
             excluded_sources: &excluded,
-            ability_index: 0,
+            ability_index: Some(0),
         };
         let mut events = Vec::new();
         let outcome = pay_ability_cost_inner(
@@ -2322,7 +2322,7 @@ mod tests {
             P0,
             src,
             &graveyard_cost,
-            0,
+            Some(0),
             &mut Vec::new(),
         );
         assert!(matches!(rejected, Err(EngineError::ActionNotAllowed(_))));
@@ -2338,7 +2338,7 @@ mod tests {
             P0,
             src,
             &battlefield_cost,
-            0,
+            Some(0),
             &mut Vec::new(),
         )
         .expect("battlefield self-return cost should be payable");
@@ -2355,7 +2355,7 @@ mod tests {
             cost,
             &PaymentScope::Activation {
                 excluded_sources: &excluded,
-                ability_index: 0,
+                ability_index: Some(0),
             },
         )
     }

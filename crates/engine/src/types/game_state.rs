@@ -6022,7 +6022,10 @@ pub enum ManaChoiceContext {
 pub struct PendingManaAbility {
     pub player: PlayerId,
     pub source_id: ObjectId,
-    pub ability_index: usize,
+    /// The live definition index when this activation originated from an
+    /// enumerated ability. Runtime-synthesized mana abilities retain their
+    /// snapshot but intentionally have no definition index.
+    pub ability_index: Option<usize>,
     /// The P1 execution scope assigned when this activation begins. It survives
     /// player-choice suspension so exact produced and spent mana keep the same
     /// causal node after resumption.
@@ -21197,7 +21200,7 @@ mod tests {
                 mana_ability: Box::new(PendingManaAbility {
                     player: PlayerId(0),
                     source_id: ObjectId(1),
-                    ability_index: 0,
+                    ability_index: None,
                     rules_execution_node: None,
                     ability_snapshot: None,
                     color_override: None,

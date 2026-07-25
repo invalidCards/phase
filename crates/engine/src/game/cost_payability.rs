@@ -225,7 +225,7 @@ impl AbilityCost {
                     state,
                     player,
                     source,
-                    ability_index,
+                    Some(ability_index),
                     cost,
                     &excluded_sources,
                 )

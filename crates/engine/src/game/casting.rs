@@ -2039,7 +2039,7 @@ pub fn pending_phyrexian_route_is_payable(
 
     let activation_context = pending
         .activation_ability_index
-        .map(|ability_index| activation_payment_context(state, spell_object, ability_index));
+        .map(|ability_index| activation_payment_context(state, spell_object, Some(ability_index)));
     let spell_meta = pending
         .activation_ability_index
         .is_none()
@@ -14040,7 +14040,7 @@ pub fn can_pay_ability_mana_cost_after_auto_tap(
     state: &GameState,
     player: PlayerId,
     source_id: ObjectId,
-    ability_index: usize,
+    ability_index: Option<usize>,
     cost: &crate::types::mana::ManaCost,
 ) -> bool {
     can_pay_ability_mana_cost_after_auto_tap_excluding(
@@ -14057,7 +14057,7 @@ pub fn can_pay_ability_mana_cost_after_auto_tap_excluding(
     state: &GameState,
     player: PlayerId,
     source_id: ObjectId,
-    ability_index: usize,
+    ability_index: Option<usize>,
     cost: &crate::types::mana::ManaCost,
     excluded_sources: &HashSet<ObjectId>,
 ) -> bool {
@@ -14488,7 +14488,7 @@ pub(super) fn pay_ability_mana_cost(
     state: &mut GameState,
     player: PlayerId,
     source_id: ObjectId,
-    ability_index: usize,
+    ability_index: Option<usize>,
     cost: &crate::types::mana::ManaCost,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EngineError> {
@@ -14509,7 +14509,7 @@ pub(super) fn pay_ability_mana_cost_excluding(
     state: &mut GameState,
     player: PlayerId,
     source_id: ObjectId,
-    ability_index: usize,
+    ability_index: Option<usize>,
     cost: &crate::types::mana::ManaCost,
     events: &mut Vec<GameEvent>,
     excluded_sources: &HashSet<ObjectId>,
@@ -14539,7 +14539,7 @@ pub(super) fn pay_ability_mana_cost_excluding_with_parent(
     state: &mut GameState,
     player: PlayerId,
     source_id: ObjectId,
-    ability_index: usize,
+    ability_index: Option<usize>,
     cost: &crate::types::mana::ManaCost,
     events: &mut Vec<GameEvent>,
     excluded_sources: &HashSet<ObjectId>,
@@ -14568,7 +14568,7 @@ pub(super) fn pay_ability_mana_cost_with_choices_excluding_and_resume(
     state: &mut GameState,
     player: PlayerId,
     source_id: ObjectId,
-    ability_index: usize,
+    ability_index: Option<usize>,
     cost: &crate::types::mana::ManaCost,
     phyrexian_choices: Option<&[crate::types::game_state::ShardChoice]>,
     events: &mut Vec<GameEvent>,
@@ -14596,7 +14596,7 @@ fn pay_ability_mana_cost_with_choices_excluding_and_parent(
     state: &mut GameState,
     player: PlayerId,
     source_id: ObjectId,
-    ability_index: usize,
+    ability_index: Option<usize>,
     cost: &crate::types::mana::ManaCost,
     phyrexian_choices: Option<&[crate::types::game_state::ShardChoice]>,
     events: &mut Vec<GameEvent>,
@@ -15055,7 +15055,7 @@ impl ActivationPaymentContext {
 pub(super) fn activation_payment_context(
     state: &GameState,
     source_id: ObjectId,
-    ability_index: usize,
+    ability_index: Option<usize>,
 ) -> ActivationPaymentContext {
     let Some(source) = state.objects.get(&source_id) else {
         return ActivationPaymentContext {
@@ -15070,7 +15070,9 @@ pub(super) fn activation_payment_context(
     // Use the same effective-ability lookup as activation itself: runtime-granted
     // cycling, graveyard, plot, Ninjutsu-family, and equip abilities live after
     // the printed `obj.abilities` slice but retain their enumerated indices.
-    let Some(ability) = activation_ability_definition(state, source_id, ability_index) else {
+    let Some(ability) =
+        ability_index.and_then(|index| activation_ability_definition(state, source_id, index))
+    else {
         return ActivationPaymentContext {
             source_types,
             source_subtypes,
@@ -15822,7 +15824,9 @@ pub(crate) fn payable_one_of_activation_branches(
 ) -> Vec<AbilityCost> {
     costs
         .iter()
-        .filter(|branch| can_pay_ability_cost_now(state, player, source_id, branch, ability_index))
+        .filter(|branch| {
+            can_pay_ability_cost_now(state, player, source_id, branch, Some(ability_index))
+        })
         .cloned()
         .collect()
 }
@@ -15839,7 +15843,7 @@ fn activation_cost_passes_early_affordability_gate(
     ability_index: usize,
 ) -> bool {
     if find_one_of_cost(cost).is_some() {
-        can_pay_ability_cost_now(state, player, source_id, cost, ability_index)
+        can_pay_ability_cost_now(state, player, source_id, cost, Some(ability_index))
     } else {
         // CR 106.6: the tag reaches the payability gate for the same reason it
         // reaches `can_pay_ability_cost_now` above — tag-scoped mana
@@ -16285,7 +16289,7 @@ pub(crate) fn can_pay_ability_cost_now(
     player: PlayerId,
     source_id: ObjectId,
     cost: &AbilityCost,
-    ability_index: usize,
+    ability_index: Option<usize>,
 ) -> bool {
     let excluded_sources = ability_mana_payment_excluded_sources(cost, source_id);
     super::costs::can_pay(
@@ -16447,7 +16451,7 @@ pub fn can_activate_ability_now_with_restriction_gates(
         .clone()
         .map(|cost| activation_cost_for_affordability(cost, ability_def.ability_tag));
     if affordability_cost.as_ref().is_some_and(|cost| {
-        !can_pay_ability_cost_now(state, player, source_id, cost, ability_index)
+        !can_pay_ability_cost_now(state, player, source_id, cost, Some(ability_index))
     }) {
         return false;
     }
@@ -16651,7 +16655,8 @@ pub(super) fn try_finalize_pending_activation_mana_leg(
         .as_ref()
         .map(|tail| ability_mana_payment_excluded_sources(tail, pending.object_id))
         .unwrap_or_default();
-    let activation_context = activation_payment_context(state, pending.object_id, ability_index);
+    let activation_context =
+        activation_payment_context(state, pending.object_id, Some(ability_index));
     let activation_ctx = activation_context.as_payment_context();
     pending.cost = mana_cost.clone();
     pending.activation_cost = remaining;
@@ -16696,7 +16701,8 @@ pub(super) fn finalize_pending_activation_mana_payment(
         .as_ref()
         .map(|tail| ability_mana_payment_excluded_sources(tail, pending.object_id))
         .unwrap_or_default();
-    let activation_context = activation_payment_context(state, pending.object_id, ability_index);
+    let activation_context =
+        activation_payment_context(state, pending.object_id, Some(ability_index));
     let activation_ctx = activation_context.as_payment_context();
     let source_id = pending.object_id;
     state.pending_cast = Some(Box::new(pending));
@@ -17522,7 +17528,7 @@ pub fn handle_activate_ability(
                     player,
                     source_id,
                     cost,
-                    ability_index,
+                    Some(ability_index),
                     events,
                 )? {
                     let pending = pending_activation_after_cost_pause(
@@ -17646,9 +17652,14 @@ pub fn handle_activate_ability(
         )? {
             return Ok(waiting);
         }
-        if let PaymentOutcome::Paused { remaining_cost } =
-            pay_ability_cost_for_activation(state, player, source_id, cost, ability_index, events)?
-        {
+        if let PaymentOutcome::Paused { remaining_cost } = pay_ability_cost_for_activation(
+            state,
+            player,
+            source_id,
+            cost,
+            Some(ability_index),
+            events,
+        )? {
             let pending = pending_activation_after_cost_pause(
                 source_id,
                 resolved.clone(),

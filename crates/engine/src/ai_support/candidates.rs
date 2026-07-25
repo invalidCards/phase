@@ -2127,7 +2127,7 @@ pub fn candidate_actions_broad_with_probe(
                     *player,
                     pending_cast.object_id,
                     cost,
-                    pending_cast.activation_ability_index.unwrap_or(usize::MAX),
+                    pending_cast.activation_ability_index,
                 )
             })
             .map(|(i, _)| {
@@ -4041,7 +4041,7 @@ pub(crate) fn priority_actions_with_probe(
                     state,
                     player,
                     *ninjutsu_object_id,
-                    usize::MAX,
+                    None,
                     cost,
                 );
                 if !can_afford {

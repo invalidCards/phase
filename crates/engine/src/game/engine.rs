@@ -6192,7 +6192,11 @@ fn apply_action(
                 let activation_ability_index = pending_ref.activation_ability_index;
                 let current_shards = if let Some(ability_index) = activation_ability_index {
                     let activation_context =
-                        casting::activation_payment_context(state, spell_object, ability_index);
+                        casting::activation_payment_context(
+                            state,
+                            spell_object,
+                            Some(ability_index),
+                        );
                     let activation_ctx = activation_context.as_payment_context();
                     let any_color = casting::player_can_spend_as_any_color_for_payment(
                         state,
@@ -9611,7 +9615,7 @@ pub(super) fn handle_spend_pool_mana(
     let activation_context;
     let ctx = if let Some(ability_index) = activation_ability_index {
         activation_context =
-            super::casting::activation_payment_context(state, object_id, ability_index);
+            super::casting::activation_payment_context(state, object_id, Some(ability_index));
         Some(activation_context.as_payment_context())
     } else {
         spell_meta = super::casting::build_spell_meta(state, player, object_id);

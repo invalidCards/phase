@@ -46,24 +46,6 @@ fn throne_ability_indices(state: &GameState, throne: ObjectId) -> (usize, usize)
     (mana, draw)
 }
 
-fn draw_payment_state(mana: &[ManaType]) -> (GameState, ObjectId, usize) {
-    let mut scenario = GameScenario::new();
-    scenario.at_phase(Phase::PreCombatMain);
-    let throne = add_throne(&mut scenario);
-    scenario.add_card_to_library_top(P0, "Throne draw test card one");
-    scenario.add_card_to_library_top(P0, "Throne draw test card two");
-    let mut state = scenario.build().state().clone();
-    choose_red(&mut state, throne);
-    let (_, draw) = throne_ability_indices(&state, throne);
-    for (index, color) in mana.iter().copied().enumerate() {
-        state.add_mana_to_pool(
-            P0,
-            ManaUnit::new(color, ObjectId(10_000 + index as u64), false, Vec::new()),
-        );
-    }
-    (state, throne, draw)
-}
-
 /// The produced units carry the chosen color of the actual producing Throne,
 /// and that restriction is consulted by the normal cast action. Each spell has
 /// a generic cost so colored-cost matching cannot hide a spend-restriction bug.
@@ -127,9 +109,28 @@ fn throne_mana_casts_only_monocolored_spells_of_its_chosen_color() {
     }
 }
 
+fn draw_payment_state(mana: &[ManaType]) -> (GameState, ObjectId, usize) {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let throne = add_throne(&mut scenario);
+    scenario.add_card_to_library_top(P0, "Throne draw test card one");
+    scenario.add_card_to_library_top(P0, "Throne draw test card two");
+    let mut state = scenario.build().state().clone();
+    choose_red(&mut state, throne);
+    let (_, draw) = throne_ability_indices(&state, throne);
+    for (index, color) in mana.iter().copied().enumerate() {
+        state.add_mana_to_pool(
+            P0,
+            ManaUnit::new(color, ObjectId(10_000 + index as u64), false, Vec::new()),
+        );
+    }
+    (state, throne, draw)
+}
+
 /// The draw rider constrains the actual mana units used for activation. This
-/// covers automatic payment, rejection of blue/mixed pools, and the manual
-/// pin/resume route used by the interactive client.
+/// covers automatic payment and the direct manual-pool fixture. `ActivateAbility`
+/// currently has no manual-payment mode, so the latter exercises the internal
+/// manual-payment branch without claiming an unreachable production route.
 #[test]
 fn throne_draw_activation_uses_only_its_chosen_color_in_auto_and_manual_payment() {
     let (red_state, red_throne, draw) =

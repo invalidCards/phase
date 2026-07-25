@@ -397,7 +397,7 @@ fn finalize_loyalty_activation(
         player,
         pw_id,
         &cost,
-        ability_index,
+        Some(ability_index),
         events,
     )
     .expect("loyalty validation passed in handle_activate_loyalty")

@@ -1945,7 +1945,7 @@ fn finish_selected_return_to_hand_after_automatic(
             player,
             pending.object_id,
             &cost,
-            ability_index,
+            Some(ability_index),
             events,
         )? {
             super::casting::PaymentOutcome::Paid => {}
@@ -2174,7 +2174,7 @@ pub(crate) fn handle_activation_cost_one_of_choice(
         player,
         pending.object_id,
         chosen_cost,
-        pending.activation_ability_index.unwrap_or(usize::MAX),
+        pending.activation_ability_index,
     ) {
         return Err(EngineError::ActionNotAllowed(
             "Chosen cost branch is not payable".to_string(),
@@ -3043,7 +3043,7 @@ pub(crate) fn handle_return_to_hand_for_cost(
                     player,
                     pending.object_id,
                     &cost,
-                    ability_index,
+                    Some(ability_index),
                     events,
                 )? {
                     super::casting::PaymentOutcome::Paid => {}
@@ -3213,7 +3213,7 @@ pub(crate) fn handle_remove_counter_for_cost(
                 player,
                 pending.object_id,
                 &cost,
-                ability_index,
+                Some(ability_index),
                 events,
             )? {
                 super::casting::PaymentOutcome::Paid => {}
@@ -3385,7 +3385,7 @@ pub(crate) fn handle_remove_counter_distribution_for_cost(
                 player,
                 pending.object_id,
                 &cost,
-                ability_index,
+                Some(ability_index),
                 events,
             )? {
                 super::casting::PaymentOutcome::Paid => {}
@@ -4446,7 +4446,7 @@ pub(super) fn push_activated_ability_to_stack(
                 player,
                 source_id,
                 cost,
-                ability_index,
+                Some(ability_index),
                 events,
             )?
         {
@@ -10312,8 +10312,11 @@ fn auto_tap_mana_sources_inner(
                     excluded_sources
                 };
                 if let Some(sub_cost) = sub_cost {
-                    let activation_context =
-                        super::casting::activation_payment_context(state, option.object_id, idx);
+                    let activation_context = super::casting::activation_payment_context(
+                        state,
+                        option.object_id,
+                        Some(idx),
+                    );
                     let activation_ctx = activation_context.as_payment_context();
                     auto_tap_mana_sources_inner(
                         state,
@@ -11208,7 +11211,7 @@ fn finalize_mana_payment_with_resume(
                 })
                 .unwrap_or_default();
             let activation_context =
-                super::casting::activation_payment_context(state, source_id, ability_index);
+                super::casting::activation_payment_context(state, source_id, Some(ability_index));
             let activation_ctx = activation_context.as_payment_context();
             if let Some(waiting) = maybe_pause_for_phyrexian_choice(
                 state,
@@ -11270,7 +11273,7 @@ fn finalize_mana_payment_with_resume(
                 state,
                 player,
                 pending.object_id,
-                ability_index,
+                Some(ability_index),
                 &pending.cost,
                 None,
                 events,
@@ -11595,7 +11598,7 @@ pub fn finalize_mana_payment_with_phyrexian_choices(
                 state,
                 player,
                 pending.object_id,
-                ability_index,
+                Some(ability_index),
                 &pending.cost,
                 Some(phyrexian_choices),
                 events,

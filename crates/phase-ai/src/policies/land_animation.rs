@@ -312,7 +312,7 @@ fn can_pay_cost_excluding_source(
         ctx.state,
         ctx.ai_player,
         source_id,
-        ability_index,
+        Some(ability_index),
         cost,
         &excluded,
     )
