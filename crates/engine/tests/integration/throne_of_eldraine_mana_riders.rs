@@ -279,8 +279,7 @@ fn throne_draw_auto_tap_uses_only_chosen_color_sources() {
             source_id: throne,
             ability_index: draw,
         })
-        .expect("three red sources must pay the red-chosen activation")
-        .waiting_for;
+        .expect("three red sources must pay the red-chosen activation");
     runner
         .act(GameAction::PassPriority)
         .expect("activator passes priority to resolve the paid activation");
