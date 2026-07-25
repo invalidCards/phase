@@ -236,41 +236,6 @@ fn runtime_granted_top_of_library_plot_abilities(
     )]
 }
 
-/// CR 702.49: Ninjutsu-family keywords function from Hand (and commander
-/// ninjutsu from Command). Card loading normally synthesizes their marker
-/// ability, but runtime keyword sets and scenario objects need the identical
-/// effective definition so activation payment can resolve the exact index.
-fn runtime_ninjutsu_family_marker_abilities(
-    state: &GameState,
-    source_id: ObjectId,
-) -> Vec<AbilityDefinition> {
-    let Some(obj) = state.objects.get(&source_id) else {
-        return Vec::new();
-    };
-    if !matches!(obj.zone, Zone::Hand | Zone::Command) {
-        return Vec::new();
-    }
-
-    // The off-zone collector is authoritative for printed and granted
-    // characteristics. Include the object's current keyword set as well: test
-    // scenarios and runtime-only objects can deliberately provide a synthesized
-    // Ninjutsu keyword without mirroring it into `base_keywords`.
-    let mut keywords =
-        crate::game::off_zone_characteristics::effective_off_zone_keywords(state, source_id);
-    for keyword in &obj.keywords {
-        if !keywords.contains(keyword) {
-            keywords.push(keyword.clone());
-        }
-    }
-    keywords
-        .into_iter()
-        .filter_map(|keyword| {
-            crate::database::synthesis::ninjutsu_family_marker_ability_for_keyword(&keyword)
-        })
-        .filter(|candidate| !obj.abilities.iter().any(|printed| printed == candidate))
-        .collect()
-}
-
 pub fn activated_ability_definitions(
     state: &GameState,
     source_id: ObjectId,
@@ -294,9 +259,6 @@ pub fn activated_ability_definitions(
             .chain(runtime_granted_top_of_library_plot_abilities(
                 state, source_id,
             ))
-            // CR 702.49: runtime/effective Ninjutsu markers must share this
-            // index space with the payment-context lookup below.
-            .chain(runtime_ninjutsu_family_marker_abilities(state, source_id))
             // CR 702.6: statically granted equip (Bram, Bludgeon Brawl) chained
             // LAST — the identical append order is REQUIRED in
             // `activation_ability_definition` so `ability_index` stays consistent.
@@ -320,7 +282,7 @@ fn activation_ability_definition(
         // Must match the append order in `activated_ability_definitions`: printed
         // abilities first, then runtime-granted cycling, then runtime-granted
         // graveyard activated (Encore/Scavenge), then runtime-granted
-        // plot-from-library (Fblthp), then Ninjutsu-family, then equip.
+        // plot-from-library (Fblthp), then equip.
         // Identical order is REQUIRED for `ability_index` consistency.
         runtime_granted_cycling_abilities(state, source_id)
             .into_iter()
@@ -330,7 +292,6 @@ fn activation_ability_definition(
             .chain(runtime_granted_top_of_library_plot_abilities(
                 state, source_id,
             ))
-            .chain(runtime_ninjutsu_family_marker_abilities(state, source_id))
             .chain(runtime_granted_equip_abilities(state, source_id))
             .nth(offset)?
     };

@@ -413,7 +413,7 @@ pub(crate) fn resolve_restrictions(
             // legacy chosen-creature-type branch retains its historical drop.
             ManaSpendRestriction::Any(subs) => {
                 let inner = resolve_restrictions(subs, state, source_id);
-                Some(ManaRestriction::OnlyForAny(inner))
+                (!inner.is_empty()).then_some(ManaRestriction::OnlyForAny(inner))
             }
         })
         .collect()

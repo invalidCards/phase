@@ -9482,6 +9482,12 @@ fn option_allowed_for_context(
     opt.restrictions
         .iter()
         .all(|restriction| restriction.allows(ctx))
+        && opt
+            .atomic_combination
+            .as_deref()
+            .unwrap_or(std::slice::from_ref(&opt.mana_type))
+            .iter()
+            .all(|mana_type| ctx.permits_actual_mana_type(*mana_type))
 }
 
 /// Pick the source with the fewest alternative color options (LCV heuristic).

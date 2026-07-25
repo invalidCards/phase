@@ -1205,7 +1205,23 @@ impl ManaRestriction {
             ManaRestriction::OnlyForAny(subs) => {
                 subs.iter().any(|r| r.allows_special_action(action))
             }
-            _ => false,
+            ManaRestriction::OnlyForSpell
+            | ManaRestriction::OnlyForSpellType(_)
+            | ManaRestriction::OnlyForCreatureType(_)
+            | ManaRestriction::OnlyForTypeSpellsOrAbilities { .. }
+            | ManaRestriction::OnlyForActivation
+            | ManaRestriction::OnlyForTaggedActivation(_)
+            | ManaRestriction::OnlyForXCosts
+            | ManaRestriction::OnlyForSpellWithKeywordKind(_)
+            | ManaRestriction::OnlyForSpellWithKeywordKindFromZone(_, _)
+            | ManaRestriction::OnlyForSpellWithManaValue { .. }
+            | ManaRestriction::OnlyForSpellMatchingCostCriteria { .. }
+            | ManaRestriction::OnlyForSpellWithColorCount { .. }
+            | ManaRestriction::OnlyForSpellColor(_)
+            | ManaRestriction::OnlyForSpellFromZone(_)
+            | ManaRestriction::OnlyForFaceDownSpell
+            | ManaRestriction::Impossible
+            | ManaRestriction::ConvokePayment => false,
         }
     }
 }

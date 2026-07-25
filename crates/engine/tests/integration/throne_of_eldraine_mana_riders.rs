@@ -50,6 +50,8 @@ fn draw_payment_state(mana: &[ManaType]) -> (GameState, ObjectId, usize) {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let throne = add_throne(&mut scenario);
+    scenario.add_card_to_library_top(P0, "Throne draw test card one");
+    scenario.add_card_to_library_top(P0, "Throne draw test card two");
     let mut state = scenario.build().state().clone();
     choose_red(&mut state, throne);
     let (_, draw) = throne_ability_indices(&state, throne);
@@ -216,6 +218,8 @@ fn throne_draw_activation_uses_only_its_chosen_color_in_auto_and_manual_payment(
     runner
         .act(GameAction::SpendPoolMana { pip_id: red_pip })
         .expect("manual payment must accept a red mana pin");
+    let hand_before = runner.state().players[P0.0 as usize].hand.len();
+    let library_before = runner.state().players[P0.0 as usize].library.len();
     runner
         .act(GameAction::PassPriority)
         .expect("pending activation must finalize from the eligible red mana");
@@ -223,4 +227,105 @@ fn throne_draw_activation_uses_only_its_chosen_color_in_auto_and_manual_payment(
         runner.state().waiting_for,
         WaitingFor::Priority { .. }
     ));
+    runner
+        .act(GameAction::PassPriority)
+        .expect("activator passes priority to resolve the paid activation");
+    runner
+        .act(GameAction::PassPriority)
+        .expect("opponent passes priority to resolve the paid activation");
+    let player = &runner.state().players[P0.0 as usize];
+    assert_eq!(
+        player.hand.len(),
+        hand_before + 2,
+        "the restricted-mana activation must resolve and draw two cards"
+    );
+    assert_eq!(
+        player.library.len(),
+        library_before - 2,
+        "the draw must consume exactly two library cards"
+    );
+    assert_eq!(
+        player.mana_pool.mana.len(),
+        1,
+        "only the ineligible blue mana may remain after paying {{3}} with red mana"
+    );
+    assert_eq!(
+        player.mana_pool.mana[0].pip_id, blue_pip,
+        "the red pinned mana must be consumed rather than silently abandoned"
+    );
+}
+
+/// The activation rider filters source enumeration before auto-tap. This is a
+/// real `ActivateAbility` path (rather than a pre-filled pool): an Island is
+/// deliberately registered before the three Mountains, so selecting any
+/// off-color source for the generic cost would leave the activation unpaid.
+#[test]
+fn throne_draw_auto_tap_uses_only_chosen_color_sources() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let throne = add_throne(&mut scenario);
+    let island = scenario.add_basic_land(P0, ManaColor::Blue);
+    let mountains: Vec<_> = (0..3)
+        .map(|_| scenario.add_basic_land(P0, ManaColor::Red))
+        .collect();
+    scenario.with_library_top(P0, &["Throne draw one", "Throne draw two"]);
+    let mut runner = scenario.build();
+    choose_red(runner.state_mut(), throne);
+    let (_, draw) = throne_ability_indices(runner.state(), throne);
+    let hand_before = runner.state().players[P0.0 as usize].hand.len();
+
+    runner
+        .act(GameAction::ActivateAbility {
+            source_id: throne,
+            ability_index: draw,
+        })
+        .expect("three red sources must pay the red-chosen activation")
+        .waiting_for;
+    runner
+        .act(GameAction::PassPriority)
+        .expect("activator passes priority to resolve the paid activation");
+    runner
+        .act(GameAction::PassPriority)
+        .expect("opponent passes priority to resolve the paid activation");
+
+    assert!(
+        !runner.state().objects[&island].tapped,
+        "off-color Island must not be selected for a red-only activation payment"
+    );
+    assert!(
+        mountains
+            .iter()
+            .all(|mountain| runner.state().objects[mountain].tapped),
+        "all three eligible Mountains must be used for the {{3}} cost"
+    );
+    assert_eq!(
+        runner.state().players[P0.0 as usize].hand.len(),
+        hand_before + 2,
+        "the activation must resolve after auto-tapping only eligible sources"
+    );
+
+    let mut blue_only = GameScenario::new();
+    blue_only.at_phase(Phase::PreCombatMain);
+    let blue_throne = add_throne(&mut blue_only);
+    let blue_sources: Vec<_> = (0..3)
+        .map(|_| blue_only.add_basic_land(P0, ManaColor::Blue))
+        .collect();
+    let mut blue_runner = blue_only.build();
+    choose_red(blue_runner.state_mut(), blue_throne);
+    let (_, blue_draw) = throne_ability_indices(blue_runner.state(), blue_throne);
+    assert!(
+        blue_runner
+            .act(GameAction::ActivateAbility {
+                source_id: blue_throne,
+                ability_index: blue_draw,
+            })
+            .is_err(),
+        "off-color sources must not make the red-chosen activation payable"
+    );
+    assert!(
+        blue_sources
+            .iter()
+            .all(|source| !blue_runner.state().objects[source].tapped),
+        "a rejected activation must not tap ineligible mana sources"
+    );
 }
