@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::replacement::{self, ReplacementResult};
 use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
-use crate::types::events::{GameEvent, PlayerActionKind};
+use crate::types::events::GameEvent;
 use crate::types::game_state::{GameState, WaitingFor};
 use crate::types::identifiers::ObjectId;
 use crate::types::proposed_event::ProposedEvent;
@@ -162,7 +162,7 @@ pub(crate) fn apply_scry_after_replacement_with_source(
 fn apply_scry_after_replacement_without_draw(
     state: &mut GameState,
     event: ProposedEvent,
-    events: &mut Vec<GameEvent>,
+    _events: &mut Vec<GameEvent>,
 ) -> ReplacementResult {
     let (player_id, count) = match event {
         ProposedEvent::Scry {
@@ -190,17 +190,6 @@ fn apply_scry_after_replacement_without_draw(
             applied: HashSet::new(),
         });
     }
-
-    events.push(GameEvent::PlayerPerformedAction {
-        player_id,
-        action: PlayerActionKind::Scry,
-        // CR 701.22a: the effective look count — the requested amount clamped
-        // to library size — carried on the event itself so each "whenever you
-        // scry" trigger's own preserved event (not a shared global) answers
-        // "the number of cards looked at while scrying this way" (Elrond,
-        // Master of Healing → `QuantityRef::TriggeringScryLookCount`).
-        look_count: Some(count as u32),
-    });
 
     let cards: Vec<_> = player
         .library
@@ -266,14 +255,16 @@ mod tests {
         let mut events = Vec::new();
         resolve(&mut state, &ability, &mut events).unwrap();
 
-        assert!(events.iter().any(|event| matches!(
-            event,
-            GameEvent::PlayerPerformedAction {
-                player_id,
-                action: PlayerActionKind::Scry,
-                ..
-            } if *player_id == PlayerId(0)
-        )));
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                GameEvent::PlayerPerformedAction {
+                    action: crate::types::events::PlayerActionKind::Scry,
+                    ..
+                }
+            )),
+            "scry observers fire only after the choice completes"
+        );
 
         match &state.waiting_for {
             WaitingFor::ScryChoice { player, cards } => {

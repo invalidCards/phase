@@ -1,6 +1,6 @@
 use crate::game::quantity::resolve_quantity_with_targets;
 use crate::game::zone_pipeline::{self, ZoneMoveRequest};
-use crate::types::ability::{Effect, EffectError, EffectKind, ResolvedAbility};
+use crate::types::ability::{Effect, EffectError, EffectKind, LibraryPosition, ResolvedAbility};
 use crate::types::events::GameEvent;
 use crate::types::game_state::GameState;
 use crate::types::zones::Zone;
@@ -10,10 +10,11 @@ pub fn resolve(
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let (count, player_filter, face_down) = match &ability.effect {
+    let (count, player_filter, position, face_down) = match &ability.effect {
         Effect::ExileTop {
             count,
             player,
+            position,
             face_down,
         } => (
             // Use resolve_quantity_with_targets so that TargetZoneCardCount (and
@@ -24,6 +25,7 @@ pub fn resolve(
             // instead of nothing. Mirrors the guard in `draw.rs` / `discard.rs`.
             resolve_quantity_with_targets(state, count, ability).max(0) as usize,
             player.clone(),
+            position,
             *face_down,
         ),
         _ => return Err(EffectError::MissingParam("ExileTop count".to_string())),
@@ -43,12 +45,18 @@ pub fn resolve(
         .find(|p| p.id == target_player)
         .ok_or(EffectError::PlayerNotFound)?;
     let count = count.min(player.library.len());
-    let top_cards: Vec<_> = player
-        .library
-        .iter()
-        .take(count)
-        .copied()
-        .collect::<Vec<_>>();
+    let top_cards: Vec<_> = match position {
+        // CR 401.2 + CR 701.13a: top/bottom are the two library edges an
+        // exile instruction may name. Bottom iteration is bottommost-first,
+        // preserving selected-pile order through the zone pipeline.
+        LibraryPosition::Top => player.library.iter().take(count).copied().collect(),
+        LibraryPosition::Bottom => player.library.iter().rev().take(count).copied().collect(),
+        _ => {
+            return Err(EffectError::MissingParam(
+                "ExileTop requires top or bottom library position".to_string(),
+            ))
+        }
+    };
     let track_exiled_by_source =
         crate::game::exile_links::should_track_exiled_by_source(state, ability.source_id, ability);
 
@@ -131,6 +139,7 @@ mod tests {
                 count: QuantityExpr::Fixed {
                     value: count as i32,
                 },
+                position: LibraryPosition::Top,
                 face_down: false,
             },
             vec![],
@@ -205,6 +214,7 @@ mod tests {
             Effect::ExileTop {
                 player: TargetFilter::Controller,
                 count: QuantityExpr::Fixed { value: 1 },
+                position: LibraryPosition::Top,
                 face_down: false,
             },
             vec![],
@@ -256,6 +266,7 @@ mod tests {
             Effect::ExileTop {
                 player: TargetFilter::TriggeringPlayer,
                 count: QuantityExpr::Fixed { value: 1 },
+                position: LibraryPosition::Top,
                 face_down: false,
             },
             vec![],
@@ -344,6 +355,7 @@ mod tests {
             Effect::ExileTop {
                 player: TargetFilter::Controller,
                 count: QuantityExpr::Fixed { value: 1 },
+                position: LibraryPosition::Top,
                 face_down: false,
             },
             vec![TargetRef::Player(PlayerId(1))], // inherited parent target
@@ -468,6 +480,7 @@ mod tests {
                         },
                     },
                 },
+                position: LibraryPosition::Top,
                 face_down: false,
             },
             vec![],
@@ -633,6 +646,7 @@ mod tests {
             Effect::ExileTop {
                 player: TargetFilter::Controller,
                 count: QuantityExpr::Fixed { value: 1 },
+                position: LibraryPosition::Top,
                 face_down: true,
             },
             vec![],
@@ -757,6 +771,7 @@ mod tests {
             Effect::ExileTop {
                 player: TargetFilter::Controller,
                 count: QuantityExpr::Fixed { value: 1 },
+                position: LibraryPosition::Top,
                 face_down: false,
             },
             vec![],
@@ -840,6 +855,7 @@ mod tests {
             Effect::ExileTop {
                 player: TargetFilter::Controller,
                 count,
+                position: LibraryPosition::Top,
                 face_down: false,
             },
             vec![],

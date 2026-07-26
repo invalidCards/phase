@@ -1099,6 +1099,7 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
         Effect::ExileTop {
             player,
             count,
+            position: _,
             face_down: _,
         } => {
             let mut acc = Axes::NONE;
@@ -1824,7 +1825,7 @@ fn scan_quantity_ref(x: &QuantityRef, mode: ScanMode) -> Axes {
         // (`state.current_trigger_event` — the scry's own `PlayerPerformedAction`
         // carrying its effective look count) → event axis true, mirroring
         // `QuantityRef::EventContextAmount` below.
-        QuantityRef::TriggeringScryLookCount => Axes {
+        QuantityRef::TriggeringScryLookCount | QuantityRef::TriggeringScryBottomCount => Axes {
             event: true,
             sibling: false,
             projected: false,

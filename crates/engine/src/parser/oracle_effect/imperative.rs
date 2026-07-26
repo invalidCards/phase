@@ -3116,6 +3116,7 @@ pub(super) fn lower_search_and_creation_ast(ast: SearchCreationImperativeAst) ->
         } => Effect::ExileTop {
             player,
             count,
+            position: LibraryPosition::Top,
             face_down,
         },
         SearchCreationImperativeAst::CopyTokenOf {
@@ -7998,6 +7999,27 @@ pub(super) fn parse_exile_ast(
     lower: &str,
     ctx: &mut ParseContext,
 ) -> Option<ZoneCounterImperativeAst> {
+    // CR 701.13a + CR 401.2: Bottom-of-library exile is a positional library
+    // instruction. This all-consuming grammar arm precedes every generic
+    // exile parser so the count remains event-context-bound and the library
+    // edge cannot degrade into a library-wide selection.
+    if all_consuming(terminated(
+        tag::<_, _, OracleError<'_>>("exile that many cards from the bottom of your library"),
+        opt(one_of(".;")),
+    ))
+    .parse(lower)
+    .is_ok()
+    {
+        return Some(ZoneCounterImperativeAst::ExileTop {
+            player: TargetFilter::Controller,
+            count: QuantityExpr::Ref {
+                qty: QuantityRef::TriggeringScryBottomCount,
+            },
+            position: LibraryPosition::Bottom,
+            face_down: false,
+        });
+    }
+
     if let Ok((rest, _)) = tag::<_, _, OracleError<'_>>("exile the top ").parse(lower) {
         let (initial_count, remainder) =
             if let Ok((rem, n)) = nom_primitives::parse_number.parse(rest) {
@@ -8039,6 +8061,7 @@ pub(super) fn parse_exile_ast(
             return Some(ZoneCounterImperativeAst::ExileTop {
                 player,
                 count,
+                position: LibraryPosition::Top,
                 face_down,
             });
         }
@@ -8086,6 +8109,7 @@ pub(super) fn parse_exile_ast(
                 return Some(ZoneCounterImperativeAst::ExileTop {
                     player: TargetFilter::Controller,
                     count,
+                    position: LibraryPosition::Top,
                     face_down,
                 });
             }
@@ -8179,6 +8203,7 @@ pub(super) fn parse_exile_ast(
         return Some(ZoneCounterImperativeAst::ExileTop {
             player: TargetFilter::Controller,
             count,
+            position: LibraryPosition::Top,
             face_down,
         });
     }
@@ -8211,6 +8236,7 @@ pub(super) fn parse_exile_ast(
         return Some(ZoneCounterImperativeAst::ExileTop {
             player,
             count,
+            position: LibraryPosition::Top,
             face_down,
         });
     }
@@ -12545,10 +12571,12 @@ pub(super) fn lower_zone_counter_ast(ast: ZoneCounterImperativeAst) -> Effect {
         ZoneCounterImperativeAst::ExileTop {
             player,
             count,
+            position,
             face_down,
         } => Effect::ExileTop {
             player,
             count,
+            position,
             face_down,
         },
         ZoneCounterImperativeAst::Counter {
@@ -19789,6 +19817,7 @@ mod tests {
                     player: TargetFilter::Controller,
                     count: QuantityExpr::Fixed { value: 1 },
                     face_down: false,
+                    ..
                 }
             ),
             "expected ExileTop(Controller, 1), got {singular:?}"
@@ -19807,6 +19836,7 @@ mod tests {
                     player: TargetFilter::Controller,
                     count: QuantityExpr::Fixed { value: 2 },
                     face_down: false,
+                    ..
                 }
             ),
             "expected ExileTop(Controller, 2), got {plural:?}"
@@ -19821,6 +19851,7 @@ mod tests {
                     player: TargetFilter::Controller,
                     count: QuantityExpr::Fixed { value: 1 },
                     face_down: false,
+                    ..
                 }
             ),
             "expected ExileTop(Controller, 1) at EOF, got {eof:?}"

@@ -14584,6 +14584,25 @@ fn try_parse_player_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefiniti
 }
 
 fn try_parse_player_action_trigger(lower: &str) -> Option<(TriggerMode, TriggerDefinition)> {
+    // CR 701.22a + CR 603.2: This is a constrained completed-scry event, not
+    // a free-text card-name dispatch. It must run before the generic action
+    // list, which intentionally recognizes only bare "scry/scries" forms.
+    if all_consuming(terminated(
+        tag::<_, _, OracleError<'_>>(
+            "whenever you choose to put one or more cards on the bottom of your library while scrying",
+        ),
+        opt(one_of(".;")),
+    ))
+    .parse(lower)
+    .is_ok()
+    {
+        let mut def = make_base();
+        def.mode = TriggerMode::Scry;
+        def.valid_target = Some(TargetFilter::Controller);
+        def.scry_bottom_count = Some((Comparator::GE, 1));
+        return Some((TriggerMode::Scry, def));
+    }
+
     for (prefix, valid_target) in [
         ("whenever you ", Some(TargetFilter::Controller)),
         (

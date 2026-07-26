@@ -12428,6 +12428,7 @@ pub(crate) fn parse_exile_top_each_library_with_collection_counter_ir(
     let mut clause = parsed_clause(Effect::ExileTop {
         player: TargetFilter::Controller,
         count: QuantityExpr::Fixed { value: 1 },
+        position: crate::types::ability::LibraryPosition::Top,
         face_down: false,
     });
     clause.sub_ability = Some(Box::new(put_counter));
@@ -19025,6 +19026,7 @@ fn lower_subject_predicate_ast(
                 return parsed_clause(Effect::ExileTop {
                     player: subject.affected,
                     count,
+                    position: crate::types::ability::LibraryPosition::Top,
                     face_down,
                 });
             }

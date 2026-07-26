@@ -2998,6 +2998,7 @@ fn trigger_combat_damage_look_then_exile_face_down_grants_impulse_play() {
             Effect::ExileTop {
                 player: TargetFilter::TriggeringPlayer,
                 count: QuantityExpr::Fixed { value: 1 },
+                position: crate::types::ability::LibraryPosition::Top,
                 face_down: true,
             }
         ),
@@ -3289,6 +3290,7 @@ fn opponent_attacks_that_player_library_binds_to_triggering_player() {
             Effect::ExileTop {
                 player: TargetFilter::TriggeringPlayer,
                 count: QuantityExpr::Fixed { value: 1 },
+                position: crate::types::ability::LibraryPosition::Top,
                 face_down: false,
             }
         ),
@@ -3351,6 +3353,7 @@ fn trigger_maralen_etb_exile_top_two_of_target_opponents_library() {
             player,
             count,
             face_down,
+            ..
         } => {
             assert_eq!(
                 *count,
@@ -7046,6 +7049,7 @@ fn trigger_evelyn_exiles_each_library_with_collection_counter_and_permission() {
         Effect::ExileTop {
             player: TargetFilter::Controller,
             count: QuantityExpr::Fixed { value: 1 },
+            position: crate::types::ability::LibraryPosition::Top,
             face_down: false,
         }
     ));

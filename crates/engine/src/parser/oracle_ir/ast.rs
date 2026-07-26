@@ -1565,6 +1565,7 @@ pub(crate) enum ZoneCounterImperativeAst {
     ExileTop {
         player: TargetFilter,
         count: QuantityExpr,
+        position: LibraryPosition,
         /// CR 406.3: Mirrors `Effect::ExileTop.face_down` — set when the
         /// Oracle text terminates with "face down" (Necropotence / Bomat
         /// Courier / Asmodeus class).
