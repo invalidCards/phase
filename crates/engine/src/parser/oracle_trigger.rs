@@ -14595,11 +14595,11 @@ fn try_parse_player_action_trigger(lower: &str) -> Option<(TriggerMode, TriggerD
     // CR 701.22a + CR 603.2: This is a constrained completed-scry event, not
     // a free-text card-name dispatch. It must run before the generic action
     // list, which intentionally recognizes only bare "scry/scries" forms.
-    if let Some(minimum) = parse_completed_scry_bottom_condition(lower) {
+    if let Some(bottom_count) = parse_completed_scry_bottom_condition(lower) {
         let mut def = make_base();
         def.mode = TriggerMode::Scry;
         def.valid_target = Some(TargetFilter::Controller);
-        def.scry_bottom_count = Some((Comparator::GE, minimum));
+        def.scry_bottom_count = Some(bottom_count);
         return Some((TriggerMode::Scry, def));
     }
 
@@ -14698,7 +14698,7 @@ fn try_parse_player_action_trigger(lower: &str) -> Option<(TriggerMode, TriggerD
 /// keyword-action axes. This deliberately recognizes no card name or complete
 /// Oracle sentence, so it can share the condition's quantity provenance with the
 /// effect parser without creating a literal-text dispatch.
-fn parse_completed_scry_bottom_condition(input: &str) -> Option<u32> {
+fn parse_completed_scry_bottom_condition(input: &str) -> Option<(Comparator, u32)> {
     let trigger_prefix = (
         alt((
             value((), tag::<_, _, OracleError<'_>>("whenever")),
@@ -14714,12 +14714,7 @@ fn parse_completed_scry_bottom_condition(input: &str) -> Option<u32> {
         tag("put"),
         space1,
     );
-    let card_count = map(
-        terminated(nom_primitives::parse_number, tag(" or more")),
-        |count| count,
-    );
     let completed_scry_suffix = (
-        space1,
         tag("cards"),
         space1,
         tag("on"),
@@ -14741,7 +14736,7 @@ fn parse_completed_scry_bottom_condition(input: &str) -> Option<u32> {
     let mut parser = all_consuming(terminated(
         preceded(
             trigger_prefix,
-            terminated(card_count, completed_scry_suffix),
+            terminated(parse_event_amount_quantifier, completed_scry_suffix),
         ),
         opt(one_of(".;")),
     ));

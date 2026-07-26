@@ -3401,6 +3401,20 @@ fn completed_scry_bottom_trigger_preserves_threshold_and_effect_provenance() {
     ));
 }
 
+#[test]
+fn completed_scry_bottom_trigger_preserves_exact_threshold() {
+    let def = parse_trigger_line(
+        "When you choose to put exactly two cards on the bottom of your library while scrying, draw a card.",
+        "Completed Scry Exact Test",
+    );
+    assert_eq!(def.mode, TriggerMode::Scry);
+    assert_eq!(def.scry_bottom_count, Some((Comparator::EQ, 2)));
+    assert!(
+        def.execute.is_some(),
+        "reach guard: the completed-scry condition must leave its effect body for the normal trigger pipeline"
+    );
+}
+
 /// Issue #1499 — Arabella, Abandoned Doll: "Whenever Arabella attacks, it
 /// deals X damage to each opponent and you gain X life, where X is the
 /// number of creatures you control with power 2 or less." The attack trigger
