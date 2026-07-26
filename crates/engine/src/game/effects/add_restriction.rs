@@ -581,7 +581,7 @@ mod tests {
         ));
     }
 
-    /// CR 109.5 + CR 514.2: an Advokist-style per-player restriction preserves
+    /// CR 109.5: an Advokist-style per-player restriction preserves
     /// the trigger controller for both "you" and "your next turn", while its
     /// affected player remains the accepting scoped player.
     #[test]
