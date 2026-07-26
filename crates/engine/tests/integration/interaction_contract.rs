@@ -7,13 +7,14 @@ use engine::game::engine::apply;
 use engine::game::interaction::{
     bind_interaction_authority, derive_viewer_interaction, preview_interaction, submit_interaction,
 };
-use engine::game::scenario::{GameScenario, P0, P1};
+use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::game::visibility::filter_state_for_viewer;
 use engine::game::DeckEntry;
 use engine::types::ability::{
-    AbilityCost, AbilityDefinition, AbilityKind, CardSelectionMode, Chooser, CounterCostSelection,
-    Effect, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef, TypedFilter, ZoneOwner,
+    AbilityCost, AbilityDefinition, AbilityKind, CardSelectionMode, Chooser, ChosenAttribute,
+    CounterCostSelection, Effect, QuantityExpr, ResolvedAbility, TargetFilter, TargetRef,
+    TypedFilter, ZoneOwner,
 };
 use engine::types::actions::{GameAction, MulliganChoice};
 use engine::types::card::CardFace;
@@ -27,7 +28,7 @@ use engine::types::game_state::{
 use engine::types::identifiers::CardId;
 use engine::types::interaction::{
     AmountAssignment, InteractionActionCode, InteractionAvailability, InteractionChoiceId,
-    InteractionManaAbilityActivationScope, InteractionManaRestriction,
+    InteractionManaAbilityActivationScope, InteractionManaColor, InteractionManaRestriction,
     InteractionOpportunityResponse, InteractionOutcomeCode, InteractionPresentationSurface,
     InteractionPreviewRequest, InteractionPreviewStatus, InteractionReasonCode,
     InteractionResponse, InteractionResponseSpec, InteractionRoleCode, InteractionSessionId,
@@ -1184,6 +1185,101 @@ fn tap_land_for_mana_projects_live_castle_output_per_unit_and_rejects_stale_choi
     )
     .expect_err("the six-green choice is stale after its sibling tapped the land");
     assert_eq!(stale.code, InteractionReasonCode::StaleInteraction);
+}
+
+#[test]
+fn tap_land_for_mana_projects_resolved_and_missing_chosen_color_restrictions() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let source = scenario
+        .add_land_from_oracle(
+            P0,
+            "Chosen Color Contract",
+            "As this land enters, choose a color.\n{T}: Add {C}. Spend this mana only to cast monocolored spells of the chosen color.",
+        )
+        .id();
+    let missing_choice_state = scenario.state().clone();
+    scenario
+        .state_mut()
+        .objects
+        .get_mut(&source)
+        .expect("chosen-color source exists")
+        .chosen_attributes
+        .push(ChosenAttribute::Color(ManaColor::Red));
+
+    let projected_restrictions = |state: &mut GameState, binding: &str| {
+        bind(state, binding);
+        let view = priority_view(state);
+        let InteractionOpportunityResponse::ExactChoices { choices } =
+            &view.opportunities[0].response
+        else {
+            panic!("priority is projected as exact choices");
+        };
+        choices
+            .iter()
+            .find(|choice| {
+                choice.surfaces.iter().any(|surface| {
+                    matches!(
+                        surface,
+                        InteractionPresentationSurface::Action {
+                            code: InteractionActionCode::TapLandForMana,
+                            ..
+                        }
+                    )
+                }) && choice.surfaces.iter().any(|surface| {
+                    matches!(
+                        surface,
+                        InteractionPresentationSurface::Object {
+                            role: InteractionRoleCode::Source,
+                            reference,
+                            ..
+                        } if reference == &source.0.to_string()
+                    )
+                })
+            })
+            .and_then(|choice| {
+                choice.surfaces.iter().find_map(|surface| match surface {
+                    InteractionPresentationSurface::Mana {
+                        role: InteractionRoleCode::ProducedMana,
+                        restrictions,
+                        ..
+                    } => Some(restrictions.clone()),
+                    _ => None,
+                })
+            })
+            .expect("the chosen-color mana source projects one produced mana unit")
+    };
+
+    let mut chosen_runner = scenario.build();
+    assert_eq!(
+        projected_restrictions(chosen_runner.state_mut(), "chosen-color-output"),
+        vec![
+            InteractionManaRestriction::OnlyForSpellWithColorCount {
+                comparator: engine::types::interaction::InteractionManaComparator::Equal,
+                count: 1,
+            },
+            InteractionManaRestriction::OnlyForSpellColor {
+                color: InteractionManaColor::Red,
+            },
+        ],
+        "the viewer contract preserves both axes of the resolved restriction"
+    );
+
+    let mut missing_choice_runner = GameRunner::from_state(missing_choice_state);
+    assert_eq!(
+        projected_restrictions(
+            missing_choice_runner.state_mut(),
+            "missing-chosen-color-output"
+        ),
+        vec![
+            InteractionManaRestriction::OnlyForSpellWithColorCount {
+                comparator: engine::types::interaction::InteractionManaComparator::Equal,
+                count: 1,
+            },
+            InteractionManaRestriction::Impossible,
+        ],
+        "a missing choice remains visibly fail-closed instead of appearing unrestricted"
+    );
 }
 
 #[test]

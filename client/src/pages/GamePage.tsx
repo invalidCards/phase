@@ -2898,6 +2898,8 @@ export function manaRestrictionLabel(
       });
     case "onlyForSpellWithColorCount":
       return t("gamePage.manaRestrictions.onlyForSpellWithColorCount", restriction.data);
+    case "onlyForSpellColor":
+      return t("gamePage.manaRestrictions.onlyForSpellColor", restriction.data);
     case "onlyForSpellFromZone":
       return t("gamePage.manaRestrictions.onlyForSpellFromZone", restriction.data);
     case "onlyForFaceDownSpell":
@@ -2910,6 +2912,8 @@ export function manaRestrictionLabel(
       });
     case "onlyForSpecialAction":
       return t("gamePage.manaRestrictions.onlyForSpecialAction", restriction.data);
+    case "impossible":
+      return t("gamePage.manaRestrictions.impossible");
     case "convokePayment":
       return t("gamePage.manaRestrictions.convokePayment");
   }
