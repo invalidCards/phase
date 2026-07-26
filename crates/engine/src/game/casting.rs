@@ -13769,20 +13769,18 @@ pub(super) fn can_feasibly_pay_mana_cost_with_tap_payment_mode(
 /// affordability gate agrees with the later payment step about which
 /// restricted mana is eligible: activation-only mana
 /// (`ManaRestriction::OnlyForActivation`) counts, spell-only mana
-/// (`ManaRestriction::OnlyForSpell` etc.) does not. `ability_tag` is
+/// (`ManaRestriction::OnlyForSpell` etc.) does not. The exact ability index is
 /// threaded into the context for tag-scoped restrictions
-/// (`OnlyForTaggedActivation`, Quinjet's power-up mana); pass `None` when the
-/// activation being probed did not originate from a tagged keyword ability —
-/// the conservative reading, matching `can_pay_ability_cost_after_auto_tap`'s
-/// documented preview behavior (the exact tag-scoped gate runs at payment
-/// time per CR 601.2g).
+/// (`OnlyForTaggedActivation`, Quinjet's power-up mana) and the activation's
+/// own mana-payment rider. `ability_index` identifies the exact ability being
+/// probed; `None` is for callers that have no enumerated ability.
 pub(super) fn can_feasibly_pay_activation_mana_cost_with_tap_payment_mode(
     state: &GameState,
     player: PlayerId,
     source_id: ObjectId,
     cost: &crate::types::mana::ManaCost,
     tap_payment_mode: ConvokeMode,
-    ability_tag: Option<crate::types::ability::AbilityTag>,
+    ability_index: Option<usize>,
 ) -> bool {
     if super::casting_costs::cost_has_x(cost) {
         let mut concrete = cost.clone();
@@ -13793,18 +13791,14 @@ pub(super) fn can_feasibly_pay_activation_mana_cost_with_tap_payment_mode(
             source_id,
             &concrete,
             tap_payment_mode,
-            ability_tag,
+            ability_index,
         );
     }
 
     let mut simulated = state.clone();
     super::layers::flush_layers(&mut simulated);
-    let (source_types, source_subtypes) = activation_source_types(&simulated, source_id);
-    let activation_ctx = PaymentContext::Activation {
-        source_types: &source_types,
-        source_subtypes: &source_subtypes,
-        ability_tag,
-    };
+    let activation_context = activation_payment_context(&simulated, source_id, ability_index);
+    let activation_ctx = activation_context.as_payment_context();
     feasibly_payable_with_tap_payment_mode_in_context(
         &simulated,
         player,
@@ -15850,7 +15844,7 @@ fn activation_cost_passes_early_affordability_gate(
         // (`OnlyForTaggedActivation`) is spendable at the real payment step,
         // so a gate that judged the cost without the tag would refuse
         // activations the payment step would have allowed.
-        cost.is_payable_for_activation(state, player, source_id, ability_tag)
+        cost.is_payable_for_activation(state, player, source_id, Some(ability_index))
     }
 }
 
