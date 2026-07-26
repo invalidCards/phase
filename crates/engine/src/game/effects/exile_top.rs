@@ -51,7 +51,9 @@ pub fn resolve(
         // preserving selected-pile order through the zone pipeline.
         LibraryPosition::Top => player.library.iter().take(count).copied().collect(),
         LibraryPosition::Bottom => player.library.iter().rev().take(count).copied().collect(),
-        _ => {
+        LibraryPosition::NthFromTop { .. }
+        | LibraryPosition::BeneathTop { .. }
+        | LibraryPosition::RandomWithinTop { .. } => {
             return Err(EffectError::MissingParam(
                 "ExileTop requires top or bottom library position".to_string(),
             ))
@@ -133,13 +135,20 @@ mod tests {
     use crate::types::player::PlayerId;
 
     fn make_exile_top_ability(count: u32) -> ResolvedAbility {
+        make_exile_top_ability_at_position(count, LibraryPosition::Top)
+    }
+
+    fn make_exile_top_ability_at_position(
+        count: u32,
+        position: LibraryPosition,
+    ) -> ResolvedAbility {
         ResolvedAbility::new(
             Effect::ExileTop {
                 player: TargetFilter::Controller,
                 count: QuantityExpr::Fixed {
                     value: count as i32,
                 },
-                position: LibraryPosition::Top,
+                position,
                 face_down: false,
             },
             vec![],
@@ -328,6 +337,56 @@ mod tests {
             state.objects.get(&third).map(|obj| obj.zone),
             Some(Zone::Library)
         );
+    }
+
+    /// CR 401.2 + CR 701.13a: Bottom-of-library ExileTop selects from the
+    /// library's opposite edge; the untouched top cards retain their exact
+    /// top-to-bottom order.
+    #[test]
+    fn exile_top_bottom_position_exiles_bottom_cards_and_preserves_top_order() {
+        let mut state = GameState::new_two_player(42);
+        let first = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "First".to_string(),
+            Zone::Library,
+        );
+        let second = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Second".to_string(),
+            Zone::Library,
+        );
+        let third = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Third".to_string(),
+            Zone::Library,
+        );
+        let fourth = create_object(
+            &mut state,
+            CardId(4),
+            PlayerId(0),
+            "Fourth".to_string(),
+            Zone::Library,
+        );
+        let ability = make_exile_top_ability_at_position(2, LibraryPosition::Bottom);
+
+        let mut events = Vec::new();
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(
+            state.players[0].library.iter().copied().collect::<Vec<_>>(),
+            vec![first, second],
+            "the original top two cards remain in order"
+        );
+        assert_eq!(state.objects[&first].zone, Zone::Library);
+        assert_eq!(state.objects[&second].zone, Zone::Library);
+        assert_eq!(state.objects[&third].zone, Zone::Exile);
+        assert_eq!(state.objects[&fourth].zone, Zone::Exile);
     }
 
     #[test]

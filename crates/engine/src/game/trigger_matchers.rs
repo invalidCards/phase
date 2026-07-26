@@ -2426,6 +2426,9 @@ pub(super) fn match_player_action(
     match trigger.mode {
         TriggerMode::SearchedLibrary => *action == PlayerActionKind::SearchedLibrary,
         TriggerMode::Scry => {
+            // CR 701.22a + CR 701.22d + CR 603.2: a completed scry emits its
+            // own action event with the number actually placed on bottom, and
+            // the trigger predicate compares that preserved event-local value.
             *action == PlayerActionKind::Scry
                 && trigger
                     .scry_bottom_count

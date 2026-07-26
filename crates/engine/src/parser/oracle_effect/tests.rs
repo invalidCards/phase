@@ -15640,8 +15640,8 @@ fn exile_card_from_top_of_your_library_face_down_for_each_opponent() {
                         filter: crate::types::ability::PlayerFilter::Opponent,
                     },
                 },
+                position: LibraryPosition::Top,
                 face_down: true,
-                ..
             }
         ),
         "Expected ExileTop(controller, opponents, face_down), got {:?}",
@@ -15662,8 +15662,8 @@ fn exile_top_target_opponents_library() {
         Effect::ExileTop {
             player,
             count,
+            position: LibraryPosition::Top,
             face_down,
-            ..
         } => {
             assert_eq!(*count, QuantityExpr::Fixed { value: 2 });
             assert!(!*face_down);
@@ -23026,8 +23026,8 @@ fn exile_top_x_cards_with_where_x_card_types_among_other_nonland_permanents() {
                             },
                     },
             },
+        position: LibraryPosition::Top,
         face_down: false,
-        ..
     } = &*def.effect
     else {
         panic!(
@@ -23072,8 +23072,8 @@ fn jeleva_etb_each_player_exiles_top_x_resolves_to_mana_spent_to_cast() {
                         metric: crate::types::ability::CastManaSpentMetric::Total,
                     },
             },
+        position: LibraryPosition::Top,
         face_down: false,
-        ..
     } = &*def.effect
     else {
         panic!(
@@ -23800,8 +23800,8 @@ fn target_opponent_exiles_top_half_library() {
         Effect::ExileTop {
             player,
             count,
+            position: LibraryPosition::Top,
             face_down: _,
-            ..
         } => {
             assert!(
                 matches!(player, TargetFilter::Typed(tf) if tf.controller == Some(ControllerRef::Opponent)),

@@ -93,11 +93,12 @@ fn temporal_anchor_parses_completed_scry_predicate_and_bottom_exile() {
     assert!(matches!(
         execute.effect.as_ref(),
         Effect::ExileTop {
+            player: engine::types::ability::TargetFilter::Controller,
             position: LibraryPosition::Bottom,
             count: QuantityExpr::Ref {
                 qty: QuantityRef::TriggeringScryBottomCount
             },
-            ..
+            face_down: false,
         }
     ));
     assert!(
@@ -175,26 +176,62 @@ fn temporal_anchor_real_exile_pile_casts_spells_plays_lands_and_isolates_second_
     scenario.at_phase(Phase::PreCombatMain);
     let anchor = scenario.add_real_card(P0, "The Temporal Anchor", Zone::Battlefield, db);
     let foreign_anchor = scenario.add_real_card(P1, "The Temporal Anchor", Zone::Battlefield, db);
+    let original_top_one = scenario.add_real_card(P0, "Island", Zone::Library, db);
+    let original_top_two = scenario.add_real_card(P0, "Mountain", Zone::Library, db);
     let own_spell = scenario.add_real_card(P0, "Ornithopter", Zone::Library, db);
     let own_land = scenario.add_real_card(P0, "Forest", Zone::Library, db);
     let foreign_spell = scenario.add_real_card(P1, "Ornithopter", Zone::Library, db);
     let own_scry = scenario
-        .add_spell_to_hand_from_oracle(P0, "Anchor Scry", false, "Scry 2.")
+        .add_spell_to_hand_from_oracle(P0, "Anchor Scry", false, "Scry 4.")
         .id();
     let foreign_scry = scenario
         .add_spell_to_hand_from_oracle(P1, "Foreign Anchor Scry", false, "Scry 1.")
         .id();
     let mut runner = scenario.build();
 
-    // P0 bottoms both cards. The real Anchor trigger then exiles that exact
-    // bottom pile and records its persistent source link.
-    assert_eq!(cast_scry_to_choice(&mut runner, own_scry).len(), 2);
+    // The production scry sees four distinct cards in this explicit order. Keep
+    // the original top two and bottom the spell/land pair; the real Anchor
+    // trigger must then exile that bottom pair rather than the surviving top
+    // pair. This distinguishes `LibraryPosition::Bottom` from a top-only resolver.
+    assert_eq!(
+        runner.state().players[P0.0 as usize]
+            .library
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![original_top_one, original_top_two, own_spell, own_land]
+    );
+    let offered = cast_scry_to_choice(&mut runner, own_scry);
+    assert_eq!(
+        offered,
+        vec![original_top_one, original_top_two, own_spell, own_land],
+        "the production scry must offer the entire ordered four-card library"
+    );
     runner
-        .act(GameAction::SelectCards { cards: vec![] })
-        .expect("bottom both P0 cards through the actual scry choice");
+        .act(GameAction::SelectCards {
+            cards: vec![original_top_one, original_top_two],
+        })
+        .expect("keep the original top pair and bottom the spell/land pair through the actual scry choice");
     resolve_after_scry_choice(&mut runner);
     assert_eq!(runner.state().objects[&own_spell].zone, Zone::Exile);
     assert_eq!(runner.state().objects[&own_land].zone, Zone::Exile);
+    assert_eq!(
+        runner.state().objects[&original_top_one].zone,
+        Zone::Library
+    );
+    assert_eq!(
+        runner.state().objects[&original_top_two].zone,
+        Zone::Library
+    );
+    assert_eq!(
+        runner.state().players[P0.0 as usize]
+            .library
+            .iter()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![original_top_one, original_top_two],
+        "only the original top pair survives in its original order"
+    );
     assert!(runner
         .state()
         .exile_links

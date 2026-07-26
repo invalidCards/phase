@@ -3352,8 +3352,8 @@ fn trigger_maralen_etb_exile_top_two_of_target_opponents_library() {
         Effect::ExileTop {
             player,
             count,
+            position: crate::types::ability::LibraryPosition::Top,
             face_down,
-            ..
         } => {
             assert_eq!(
                 *count,
@@ -3370,6 +3370,35 @@ fn trigger_maralen_etb_exile_top_two_of_target_opponents_library() {
         }
         other => panic!("Expected ExileTop, got {other:?}"),
     }
+}
+
+/// CR 701.22a + CR 603.2: A completed-scry condition is parsed from its
+/// keyword, controller, threshold, library edge/owner, and scry-action axes;
+/// its typed bottom-count provenance reaches the following effect body.
+#[test]
+fn completed_scry_bottom_trigger_preserves_threshold_and_effect_provenance() {
+    let def = parse_trigger_line(
+        "When you choose to put two or more cards on the bottom of your library while scrying, exile that many cards from the bottom of your library.",
+        "Completed Scry Test",
+    );
+    assert_eq!(def.mode, TriggerMode::Scry);
+    assert_eq!(def.valid_target, Some(TargetFilter::Controller));
+    assert_eq!(def.scry_bottom_count, Some((Comparator::GE, 2)));
+    let execute = def
+        .execute
+        .as_ref()
+        .expect("completed-scry trigger must have an effect body");
+    assert!(matches!(
+        execute.effect.as_ref(),
+        Effect::ExileTop {
+            player: TargetFilter::Controller,
+            count: QuantityExpr::Ref {
+                qty: QuantityRef::TriggeringScryBottomCount,
+            },
+            position: crate::types::ability::LibraryPosition::Bottom,
+            face_down: false,
+        }
+    ));
 }
 
 /// Issue #1499 — Arabella, Abandoned Doll: "Whenever Arabella attacks, it

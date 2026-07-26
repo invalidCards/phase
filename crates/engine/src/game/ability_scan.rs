@@ -8202,4 +8202,19 @@ mod tests {
             QuantityRef::TriggeringScryLookCount
         )));
     }
+
+    /// CR 701.22a + CR 701.22d + CR 603.2c: the completed-scry bottom count is
+    /// carried by the current trigger event, never a sibling or projected
+    /// resource. Assert the scanner axes directly so the shared match arm cannot
+    /// accidentally classify it more broadly.
+    #[test]
+    fn triggering_scry_bottom_count_has_only_the_event_axis() {
+        let axes = scan_quantity_ref(
+            &QuantityRef::TriggeringScryBottomCount,
+            ScanMode::Conservative,
+        );
+        assert!(axes.event);
+        assert!(!axes.sibling);
+        assert!(!axes.projected);
+    }
 }

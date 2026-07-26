@@ -12857,8 +12857,8 @@ mod tests {
                     count: QuantityExpr::Ref {
                         qty: QuantityRef::EventContextAmount
                     },
+                    position: crate::types::ability::LibraryPosition::Top,
                     face_down: false,
-                    ..
                 }
             ),
             "expected ExileTop against prevented damage recipient, got {:?}",

@@ -1323,6 +1323,14 @@ pub(crate) fn parse_trigger_line_with_index_ir(
     if let Some(scope) = relative_player_scope_for_condition(&cond_lower) {
         effect_ctx.relative_player_scope = Some(scope);
     }
+    // CR 701.22a + CR 603.2: The completed-scry predicate establishes the
+    // provenance for its "that many" effect body. Keep this as a pure match on
+    // the condition text: `parse_trigger_condition` below remains the single
+    // authoritative trigger-definition parse and the outer context is untouched
+    // until then.
+    if parse_completed_scry_bottom_condition(&cond_lower).is_some() {
+        effect_ctx.quantity_ref = Some(QuantityRef::TriggeringScryBottomCount);
+    }
     // Snapshot the condition-established scope before body parsing (which may
     // temporarily rebind it via `with_player_scope`) so lowering sees the scope
     // the condition introduced, not a transient nested-clause value.
@@ -14587,19 +14595,11 @@ fn try_parse_player_action_trigger(lower: &str) -> Option<(TriggerMode, TriggerD
     // CR 701.22a + CR 603.2: This is a constrained completed-scry event, not
     // a free-text card-name dispatch. It must run before the generic action
     // list, which intentionally recognizes only bare "scry/scries" forms.
-    if all_consuming(terminated(
-        tag::<_, _, OracleError<'_>>(
-            "whenever you choose to put one or more cards on the bottom of your library while scrying",
-        ),
-        opt(one_of(".;")),
-    ))
-    .parse(lower)
-    .is_ok()
-    {
+    if let Some(minimum) = parse_completed_scry_bottom_condition(lower) {
         let mut def = make_base();
         def.mode = TriggerMode::Scry;
         def.valid_target = Some(TargetFilter::Controller);
-        def.scry_bottom_count = Some((Comparator::GE, 1));
+        def.scry_bottom_count = Some((Comparator::GE, minimum));
         return Some((TriggerMode::Scry, def));
     }
 
@@ -14691,6 +14691,61 @@ fn try_parse_player_action_trigger(lower: &str) -> Option<(TriggerMode, TriggerD
     }
 
     None
+}
+
+/// CR 701.22a + CR 603.2: Parse the completed-scry predicate as independent
+/// trigger-keyword, player-scope, quantity, library-edge, library-owner, and
+/// keyword-action axes. This deliberately recognizes no card name or complete
+/// Oracle sentence, so it can share the condition's quantity provenance with the
+/// effect parser without creating a literal-text dispatch.
+fn parse_completed_scry_bottom_condition(input: &str) -> Option<u32> {
+    let trigger_prefix = (
+        alt((
+            value((), tag::<_, _, OracleError<'_>>("whenever")),
+            value((), tag("when")),
+        )),
+        space1,
+        tag("you"),
+        space1,
+        tag("choose"),
+        space1,
+        tag("to"),
+        space1,
+        tag("put"),
+        space1,
+    );
+    let card_count = map(
+        terminated(nom_primitives::parse_number, tag(" or more")),
+        |count| count,
+    );
+    let completed_scry_suffix = (
+        space1,
+        tag("cards"),
+        space1,
+        tag("on"),
+        space1,
+        tag("the"),
+        space1,
+        tag("bottom"),
+        space1,
+        tag("of"),
+        space1,
+        tag("your"),
+        space1,
+        tag("library"),
+        space1,
+        tag("while"),
+        space1,
+        tag("scrying"),
+    );
+    let mut parser = all_consuming(terminated(
+        preceded(
+            trigger_prefix,
+            terminated(card_count, completed_scry_suffix),
+        ),
+        opt(one_of(".;")),
+    ));
+    parser.parse(input).ok().map(|(_, count)| count)
 }
 
 /// CR 701.57a: True when `text` is a BARE "discover"/"discovers" trigger subject
