@@ -1553,15 +1553,20 @@ mod tests {
 
         let mut scenario = GameScenario::new();
         let source = scenario
-            .add_creature_from_oracle(
-                P0,
-                "Waterbender Ascension",
-                0,
-                0,
-                "{4}: Draw a card.\n{4}: Draw a card.",
+            .add_creature(P0, "Waterbender Ascension", 0, 0)
+            .as_enchantment()
+            .from_oracle_text(
+                "Power-up — Waterbend {4}: Target creature can't be blocked this turn.\n{4}: Draw a card.",
             )
             .id();
-        let abilities = &mut scenario.state.objects.get_mut(&source).unwrap().abilities;
+        let abilities = std::sync::Arc::make_mut(
+            &mut scenario
+                .state
+                .objects
+                .get_mut(&source)
+                .expect("Waterbender source exists")
+                .abilities,
+        );
         abilities[0].ability_tag = Some(AbilityTag::PowerUp);
         abilities[1].ability_tag = Some(AbilityTag::Equip);
         // Four colorless mana usable ONLY for a Power-up-tagged activation.

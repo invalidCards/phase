@@ -7,7 +7,7 @@ use engine::game::engine::apply;
 use engine::game::interaction::{
     bind_interaction_authority, derive_viewer_interaction, preview_interaction, submit_interaction,
 };
-use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
+use engine::game::scenario::{GameScenario, P0, P1};
 use engine::game::scenario_db::GameScenarioDbExt;
 use engine::game::visibility::filter_state_for_viewer;
 use engine::game::DeckEntry;
@@ -25,7 +25,7 @@ use engine::types::game_state::{
     MulliganDecisionEntry, MulliganDecisionPhase, OpeningHandBottomReason, PendingTriggerSummary,
     PlayerDeckPool, TurnBoundary, WaitingFor,
 };
-use engine::types::identifiers::CardId;
+use engine::types::identifiers::{CardId, ObjectId};
 use engine::types::interaction::{
     AmountAssignment, InteractionActionCode, InteractionAvailability, InteractionChoiceId,
     InteractionManaAbilityActivationScope, InteractionManaColor, InteractionManaRestriction,
@@ -1191,23 +1191,28 @@ fn tap_land_for_mana_projects_live_castle_output_per_unit_and_rejects_stale_choi
 fn tap_land_for_mana_projects_resolved_and_missing_chosen_color_restrictions() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
-    let source = scenario
-        .add_land_from_oracle(
-            P0,
-            "Chosen Color Contract",
-            "As this land enters, choose a color.\n{T}: Add {C}. Spend this mana only to cast monocolored spells of the chosen color.",
-        )
+    let oracle = "As this land enters, choose a color.\n{T}: Add {C}. Spend this mana only to cast monocolored spells of the chosen color.";
+    let red_source = scenario
+        .add_land_from_oracle(P0, "Red Chosen Color Contract", oracle)
         .id();
-    let missing_choice_state = scenario.state().clone();
-    scenario
-        .state_mut()
-        .objects
-        .get_mut(&source)
-        .expect("chosen-color source exists")
-        .chosen_attributes
-        .push(ChosenAttribute::Color(ManaColor::Red));
+    let blue_source = scenario
+        .add_land_from_oracle(P0, "Blue Chosen Color Contract", oracle)
+        .id();
+    let missing_choice_source = scenario
+        .add_land_from_oracle(P0, "Missing Chosen Color Contract", oracle)
+        .id();
+    let mut runner = scenario.build();
+    for (source, color) in [(red_source, ManaColor::Red), (blue_source, ManaColor::Blue)] {
+        runner
+            .state_mut()
+            .objects
+            .get_mut(&source)
+            .expect("chosen-color source exists")
+            .chosen_attributes
+            .push(ChosenAttribute::Color(color));
+    }
 
-    let projected_restrictions = |state: &mut GameState, binding: &str| {
+    let projected_restrictions = |state: &mut GameState, source: ObjectId, binding: &str| {
         bind(state, binding);
         let view = priority_view(state);
         let InteractionOpportunityResponse::ExactChoices { choices } =
@@ -1250,9 +1255,8 @@ fn tap_land_for_mana_projects_resolved_and_missing_chosen_color_restrictions() {
             .expect("the chosen-color mana source projects one produced mana unit")
     };
 
-    let mut chosen_runner = scenario.build();
     assert_eq!(
-        projected_restrictions(chosen_runner.state_mut(), "chosen-color-output"),
+        projected_restrictions(runner.state_mut(), red_source, "red-chosen-color-output"),
         vec![
             InteractionManaRestriction::OnlyForSpellWithColorCount {
                 comparator: engine::types::interaction::InteractionManaComparator::Equal,
@@ -1262,13 +1266,27 @@ fn tap_land_for_mana_projects_resolved_and_missing_chosen_color_restrictions() {
                 color: InteractionManaColor::Red,
             },
         ],
-        "the viewer contract preserves both axes of the resolved restriction"
+        "the viewer contract preserves the red source's resolved restriction"
     );
 
-    let mut missing_choice_runner = GameRunner::from_state(missing_choice_state);
+    assert_eq!(
+        projected_restrictions(runner.state_mut(), blue_source, "blue-chosen-color-output"),
+        vec![
+            InteractionManaRestriction::OnlyForSpellWithColorCount {
+                comparator: engine::types::interaction::InteractionManaComparator::Equal,
+                count: 1,
+            },
+            InteractionManaRestriction::OnlyForSpellColor {
+                color: InteractionManaColor::Blue,
+            },
+        ],
+        "each source projects its own chosen color rather than another source's choice"
+    );
+
     assert_eq!(
         projected_restrictions(
-            missing_choice_runner.state_mut(),
+            runner.state_mut(),
+            missing_choice_source,
             "missing-chosen-color-output"
         ),
         vec![
