@@ -1544,7 +1544,8 @@ pub(crate) enum BattlefieldDepartureSourceContext<'a> {
     Malformed,
 }
 
-/// Returns the authority state for a battlefield departure's record-owned source context.
+/// CR 400.7 + CR 603.10a: Returns the authority state for a battlefield
+/// departure's record-owned source context.
 ///
 /// A `ZoneChanged` event and its record are one unit of event-time authority. A
 /// later incarnation at the same `ObjectId` (or an overwritten ObjectId-keyed

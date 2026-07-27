@@ -60,6 +60,20 @@ fn stack_entries_from(runner: &GameRunner, source: ObjectId) -> usize {
         .count()
 }
 
+fn felisa_with_counter_victim() -> (GameRunner, ObjectId, ObjectId) {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(engine::types::phase::Phase::PreCombatMain);
+    let felisa = scenario
+        .add_creature(P0, "Felisa, Fang of Silverquill", 3, 2)
+        .from_oracle_text_with_keywords(&["Flying", "Mentor"], FELISA_ORACLE)
+        .id();
+    let victim = scenario
+        .add_creature(P0, "Counter Victim", 1, 1)
+        .with_plus_counters(3)
+        .id();
+    (scenario.build(), felisa, victim)
+}
+
 /// CR 603.4 + CR 603.10a + CR 122.2: Felisa's intervening-if and X both read
 /// the dying creature's exact departure snapshot. Reanimating that creature
 /// before the trigger resolves must not turn three counters into zero.
@@ -245,17 +259,24 @@ fn felisa_counts_departure_counters_after_goryos_reanimates_the_victim() {
 /// fail closed at trigger detection instead of consulting the mutable LKI cache.
 #[test]
 fn felisa_does_not_trigger_from_a_malformed_departure_record() {
-    let mut scenario = GameScenario::new();
-    scenario.at_phase(engine::types::phase::Phase::PreCombatMain);
-    let felisa = scenario
-        .add_creature(P0, "Felisa, Fang of Silverquill", 3, 2)
-        .from_oracle_text_with_keywords(&["Flying", "Mentor"], FELISA_ORACLE)
-        .id();
-    let victim = scenario
-        .add_creature(P0, "Counter Victim", 1, 1)
-        .with_plus_counters(3)
-        .id();
-    let mut runner = scenario.build();
+    let (mut unmodified_runner, unmodified_felisa, unmodified_victim) =
+        felisa_with_counter_victim();
+    let mut unmodified_death_events = Vec::new();
+    move_to_zone(
+        unmodified_runner.state_mut(),
+        unmodified_victim,
+        Zone::Graveyard,
+        &mut unmodified_death_events,
+    );
+    process_triggers(unmodified_runner.state_mut(), &unmodified_death_events);
+    drain_order_triggers_with_identity(unmodified_runner.state_mut());
+    assert_eq!(
+        stack_entries_from(&unmodified_runner, unmodified_felisa),
+        1,
+        "the unmodified production death event reach-guards Felisa's trigger path"
+    );
+
+    let (mut runner, felisa, victim) = felisa_with_counter_victim();
 
     let mut death_events = Vec::new();
     move_to_zone(
