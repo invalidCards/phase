@@ -4811,16 +4811,28 @@ fn event_context_counter_count_from_lki(
         ) => counter_type,
         _ => return None,
     };
-    let crate::types::events::GameEvent::ZoneChanged {
+    let event @ crate::types::events::GameEvent::ZoneChanged {
         object_id,
         from: Some(crate::types::zones::Zone::Battlefield),
         ..
-    } = state.current_trigger_event.as_ref()?
+    } = state
+        .current_trigger_event
+        .as_ref()
+        .cloned()
+        .or_else(detection_trigger_event)?
     else {
         return None;
     };
-    let lki = state.lki_cache.get(object_id)?;
-    let count = counter_count_from_map(&lki.counters, Some(counter_type));
+    let count = match crate::types::game_state::battlefield_departure_trigger_source_context(&event)
+    {
+        Ok(Some(context)) => counter_count_from_map(&context.lki.counters, Some(counter_type)),
+        Ok(None) => state
+            .lki_cache
+            .get(&object_id)
+            .map(|lki| counter_count_from_map(&lki.counters, Some(counter_type)))?,
+        // A malformed record must not consume a newer incarnation's cache.
+        Err(()) => return None,
+    };
     (count > 0).then_some(count)
 }
 
@@ -4867,6 +4879,41 @@ fn resolve_counters_on_scope(
         // Enrage reflex. Grouped with `Source` so the unbound anaphor keeps
         // exactly the referent it had before the scope carried provenance.
         ObjectScope::Source | ObjectScope::EventSource | ObjectScope::Anaphoric => {
+            // CR 400.7 + CR 603.10a: `EventSource` on a battlefield departure
+            // names the object in the event, not a same-id incarnation that
+            // might have returned before this trigger resolves. The complete
+            // event record is authoritative; a context-free legacy record may
+            // use the historic cache fallback, but malformed provenance fails
+            // closed. Other event kinds and Source/Anaphoric retain their
+            // existing resolution paths below.
+            if scope == ObjectScope::EventSource {
+                let event = state
+                    .current_trigger_event
+                    .as_ref()
+                    .cloned()
+                    .or_else(detection_trigger_event);
+                if let Some(
+                    event @ crate::types::events::GameEvent::ZoneChanged {
+                        object_id,
+                        from: Some(crate::types::zones::Zone::Battlefield),
+                        ..
+                    },
+                ) = event.as_ref()
+                {
+                    return match crate::types::game_state::battlefield_departure_trigger_source_context(event)
+                    {
+                        Ok(Some(context)) => {
+                            counter_count_from_map(&context.lki.counters, counter_type)
+                        }
+                        Ok(None) => state
+                            .lki_cache
+                            .get(object_id)
+                            .map(|lki| counter_count_from_map(&lki.counters, counter_type))
+                            .unwrap_or(0),
+                        Err(()) => 0,
+                    };
+                }
+            }
             if matches!(scope, ObjectScope::Source | ObjectScope::Anaphoric)
                 && ctx.trigger_source.is_some()
             {
@@ -12159,7 +12206,72 @@ mod tests {
             PlayerId(0),
         );
 
-        assert_eq!(resolve_quantity_with_targets(&state, &expr, &ability), 3);
+        // The live object is now in the graveyard with no counters. Poison the
+        // mutable cache with that post-departure state too: EventSource must
+        // still use the record-owned departure context, not either fallback.
+        state
+            .lki_cache
+            .insert(source, state.objects[&source].snapshot_for_mana_spent());
+
+        assert_eq!(
+            resolve_quantity_with_targets(&state, &expr, &ability),
+            3,
+            "the zone-change record's LKI outranks a later cache incarnation"
+        );
+    }
+
+    #[test]
+    fn resolve_quantity_counters_on_event_source_uses_legacy_cache_only_when_context_absent() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Runecarved Obelisk".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .counters
+            .insert(CounterType::Generic("charge".to_string()), 3);
+
+        let mut events = Vec::new();
+        crate::game::zones::move_to_zone(&mut state, source, Zone::Graveyard, &mut events);
+        let mut event = events
+            .into_iter()
+            .find(|event| {
+                matches!(event, crate::types::events::GameEvent::ZoneChanged { object_id, .. } if *object_id == source)
+            })
+            .expect("move_to_zone must emit a ZoneChanged event");
+        let crate::types::events::GameEvent::ZoneChanged { record, .. } = &mut event else {
+            unreachable!("selected ZoneChanged event")
+        };
+        record.trigger_source_context = None;
+        state.current_trigger_event = Some(event);
+
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::CountersOn {
+                scope: ObjectScope::EventSource,
+                counter_type: Some(CounterType::Generic("charge".to_string())),
+            },
+        };
+        let ability = crate::types::ability::ResolvedAbility::new(
+            Effect::Draw {
+                count: expr.clone(),
+                target: TargetFilter::Controller,
+            },
+            Vec::new(),
+            ObjectId(99),
+            PlayerId(0),
+        );
+
+        assert_eq!(
+            resolve_quantity_with_targets(&state, &expr, &ability),
+            3,
+            "only an absent legacy context may use the ObjectId-keyed cache"
+        );
     }
 
     /// CR 122.1: `AnyCountersOnSelf` sums every counter type on the source

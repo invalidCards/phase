@@ -1534,6 +1534,48 @@ impl ZoneChangeRecord {
     }
 }
 
+/// Returns the record-owned source context for a coherent battlefield departure.
+///
+/// A `ZoneChanged` event and its record are one unit of event-time authority. A
+/// later incarnation at the same `ObjectId` (or an overwritten ObjectId-keyed
+/// LKI cache entry) may not answer a question about the object that left the
+/// battlefield. Older saved/test records can lack a source context entirely,
+/// which is distinguishable from a present but malformed context: callers that
+/// retain a documented legacy cache fallback receive `Ok(None)`, while
+/// malformed provenance receives `Err(())` and must fail closed.
+pub fn battlefield_departure_trigger_source_context(
+    event: &GameEvent,
+) -> Result<Option<&TriggerSourceContext>, ()> {
+    let GameEvent::ZoneChanged {
+        object_id,
+        from,
+        to,
+        record,
+    } = event
+    else {
+        return Err(());
+    };
+
+    if *object_id != record.object_id
+        || *from != record.from_zone
+        || *to != record.to_zone
+        || *from != Some(Zone::Battlefield)
+    {
+        return Err(());
+    }
+
+    match record.trigger_source_context() {
+        None => Ok(None),
+        Some(context)
+            if context.identity.reference.object_id == *object_id
+                && context.identity.expected_zone == Zone::Battlefield =>
+        {
+            Ok(Some(context))
+        }
+        Some(_) => Err(()),
+    }
+}
+
 /// CR 506.4 / CR 508.1k / CR 509.1g / CR 509.1h: Combat role snapshot for an
 /// object leaving its current zone.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
