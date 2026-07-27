@@ -4825,13 +4825,15 @@ fn event_context_counter_count_from_lki(
     };
     let count = match crate::types::game_state::battlefield_departure_trigger_source_context(&event)
     {
-        Ok(Some(context)) => counter_count_from_map(&context.lki.counters, Some(counter_type)),
-        Ok(None) => state
+        crate::types::game_state::BattlefieldDepartureSourceContext::Present(context) => {
+            counter_count_from_map(&context.lki.counters, Some(counter_type))
+        }
+        crate::types::game_state::BattlefieldDepartureSourceContext::Absent => state
             .lki_cache
             .get(&object_id)
             .map(|lki| counter_count_from_map(&lki.counters, Some(counter_type)))?,
         // A malformed record must not consume a newer incarnation's cache.
-        Err(()) => return None,
+        crate::types::game_state::BattlefieldDepartureSourceContext::Malformed => return None,
     };
     (count > 0).then_some(count)
 }
@@ -4902,15 +4904,15 @@ fn resolve_counters_on_scope(
                 {
                     return match crate::types::game_state::battlefield_departure_trigger_source_context(event)
                     {
-                        Ok(Some(context)) => {
+                        crate::types::game_state::BattlefieldDepartureSourceContext::Present(context) => {
                             counter_count_from_map(&context.lki.counters, counter_type)
                         }
-                        Ok(None) => state
+                        crate::types::game_state::BattlefieldDepartureSourceContext::Absent => state
                             .lki_cache
                             .get(object_id)
                             .map(|lki| counter_count_from_map(&lki.counters, counter_type))
                             .unwrap_or(0),
-                        Err(()) => 0,
+                        crate::types::game_state::BattlefieldDepartureSourceContext::Malformed => 0,
                     };
                 }
             }

@@ -3292,28 +3292,30 @@ fn collect_pending_triggers_with_collection(
             ..
         } = event
         {
-            let matched_triggers = if let Ok(Some(source_context)) =
-                crate::types::game_state::battlefield_departure_trigger_source_context(event)
-            {
-                collect_matching_triggers_from_context(
-                    state,
-                    event,
-                    events,
+            let matched_triggers =
+                if let crate::types::game_state::BattlefieldDepartureSourceContext::Present(
                     source_context,
-                    Some(Zone::Battlefield),
-                    &mut batched_this_pass,
-                    &mut registered_this_event,
-                    &active_suppress_triggers,
-                    collection,
-                    TriggerSourceVisit::EventSubject,
-                )
-            } else {
-                // A record without its owned pre-event context cannot prove that
-                // a current same-id object is the object that left the battlefield.
-                // Fail closed rather than rebinding an LTB trigger to a later
-                // incarnation.
-                Vec::new()
-            };
+                ) = crate::types::game_state::battlefield_departure_trigger_source_context(event)
+                {
+                    collect_matching_triggers_from_context(
+                        state,
+                        event,
+                        events,
+                        source_context,
+                        Some(Zone::Battlefield),
+                        &mut batched_this_pass,
+                        &mut registered_this_event,
+                        &active_suppress_triggers,
+                        collection,
+                        TriggerSourceVisit::EventSubject,
+                    )
+                } else {
+                    // A record without its owned pre-event context cannot prove that
+                    // a current same-id object is the object that left the battlefield.
+                    // Fail closed rather than rebinding an LTB trigger to a later
+                    // incarnation.
+                    Vec::new()
+                };
             if !matched_triggers.is_empty() {
                 for matched in matched_triggers {
                     record_trigger_fired_with_ref(
@@ -9148,12 +9150,18 @@ fn evaluate_trigger_condition_with_source(
                     match crate::types::game_state::battlefield_departure_trigger_source_context(
                         event,
                     ) {
-                        Ok(Some(context)) => matches_counter(&context.lki),
+                        crate::types::game_state::BattlefieldDepartureSourceContext::Present(
+                            context,
+                        ) => matches_counter(&context.lki),
                         // Compatibility for legacy/defaulted records only. A
                         // present incoherent context is not absent and must
                         // never be rebound through the ObjectId-keyed cache.
-                        Ok(None) => state.lki_cache.get(object_id).is_some_and(matches_counter),
-                        Err(()) => false,
+                        crate::types::game_state::BattlefieldDepartureSourceContext::Absent => {
+                            state.lki_cache.get(object_id).is_some_and(matches_counter)
+                        }
+                        crate::types::game_state::BattlefieldDepartureSourceContext::Malformed => {
+                            false
+                        }
                     }
                 }
                 // Non-departure ZoneChanged events never had an owned
@@ -10506,7 +10514,7 @@ pub mod tests {
         };
         assert!(matches!(
             crate::types::game_state::battlefield_departure_trigger_source_context(&event),
-            Ok(Some(_))
+            crate::types::game_state::BattlefieldDepartureSourceContext::Present(_)
         ));
 
         let mismatched_event = GameEvent::ZoneChanged {
@@ -10519,7 +10527,7 @@ pub mod tests {
             crate::types::game_state::battlefield_departure_trigger_source_context(
                 &mismatched_event
             ),
-            Err(())
+            crate::types::game_state::BattlefieldDepartureSourceContext::Malformed
         ));
 
         let mut post_change_context = record.clone();
@@ -10539,7 +10547,7 @@ pub mod tests {
             crate::types::game_state::battlefield_departure_trigger_source_context(
                 &malformed_context_event
             ),
-            Err(())
+            crate::types::game_state::BattlefieldDepartureSourceContext::Malformed
         ));
 
         let missing_context =
@@ -10552,7 +10560,7 @@ pub mod tests {
         };
         assert!(matches!(
             crate::types::game_state::battlefield_departure_trigger_source_context(&legacy_event),
-            Ok(None)
+            crate::types::game_state::BattlefieldDepartureSourceContext::Absent
         ));
     }
 

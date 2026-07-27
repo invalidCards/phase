@@ -1534,18 +1534,28 @@ impl ZoneChangeRecord {
     }
 }
 
-/// Returns the record-owned source context for a coherent battlefield departure.
+/// The authority state of a record-owned battlefield-departure source context.
+///
+/// `Absent` preserves compatibility with context-free saved/test records;
+/// `Malformed` is a present but incoherent record and must fail closed.
+pub(crate) enum BattlefieldDepartureSourceContext<'a> {
+    Present(&'a TriggerSourceContext),
+    Absent,
+    Malformed,
+}
+
+/// Returns the authority state for a battlefield departure's record-owned source context.
 ///
 /// A `ZoneChanged` event and its record are one unit of event-time authority. A
 /// later incarnation at the same `ObjectId` (or an overwritten ObjectId-keyed
 /// LKI cache entry) may not answer a question about the object that left the
 /// battlefield. Older saved/test records can lack a source context entirely,
 /// which is distinguishable from a present but malformed context: callers that
-/// retain a documented legacy cache fallback receive `Ok(None)`, while
-/// malformed provenance receives `Err(())` and must fail closed.
-pub fn battlefield_departure_trigger_source_context(
+/// retain a documented legacy cache fallback receive `Absent`, while
+/// malformed provenance receives `Malformed` and must fail closed.
+pub(crate) fn battlefield_departure_trigger_source_context(
     event: &GameEvent,
-) -> Result<Option<&TriggerSourceContext>, ()> {
+) -> BattlefieldDepartureSourceContext<'_> {
     let GameEvent::ZoneChanged {
         object_id,
         from,
@@ -1553,7 +1563,7 @@ pub fn battlefield_departure_trigger_source_context(
         record,
     } = event
     else {
-        return Err(());
+        return BattlefieldDepartureSourceContext::Malformed;
     };
 
     if *object_id != record.object_id
@@ -1561,18 +1571,18 @@ pub fn battlefield_departure_trigger_source_context(
         || *to != record.to_zone
         || *from != Some(Zone::Battlefield)
     {
-        return Err(());
+        return BattlefieldDepartureSourceContext::Malformed;
     }
 
     match record.trigger_source_context() {
-        None => Ok(None),
+        None => BattlefieldDepartureSourceContext::Absent,
         Some(context)
             if context.identity.reference.object_id == *object_id
                 && context.identity.expected_zone == Zone::Battlefield =>
         {
-            Ok(Some(context))
+            BattlefieldDepartureSourceContext::Present(context)
         }
-        Some(_) => Err(()),
+        Some(_) => BattlefieldDepartureSourceContext::Malformed,
     }
 }
 
