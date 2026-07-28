@@ -6,7 +6,7 @@
 
 use crate::parser::oracle::{lower_oracle_ir, parse_oracle_ir, ParsedAbilities};
 use crate::parser::oracle_ir::diagnostic::OracleDiagnostic;
-use crate::parser::oracle_ir::doc::OracleDocIr;
+use crate::parser::oracle_ir::doc::{OracleDocIr, OracleNodeIr};
 
 /// Parse Oracle text through both IR and lowering layers.
 fn parse_two_layer(
@@ -135,6 +135,113 @@ fn questing_beast() {
     );
     insta::assert_json_snapshot!("questing_beast_ir", &ir);
     insta::assert_json_snapshot!("questing_beast_lowered", &lowered);
+}
+
+// ---------------------------------------------------------------------------
+// CR 615.1a prevention spells — the instant/sorcery prevention recognizer
+// ---------------------------------------------------------------------------
+//
+// CR 615.1a: "Effects that use the word 'prevent' are prevention effects."
+// That sentence *is* this recognizer's admission test: it claims an
+// instant/sorcery line containing both "prevent" and "damage" (excluding the
+// CR 614.15 ability-word self-replacement printings) and lowers the whole line
+// as a resolving spell chain rather than a standing replacement definition.
+//
+// **Why these two fixtures exist.** 153 cards in the pool reach that site and,
+// before Plan 05b T9a, NOT ONE of them was snapshotted — the only spell path
+// that lowered a whole ability body without `finalize_effect_chain`, the
+// owner-library reveal anchor, and the `WithContext` whole-body recognizer set
+// was also the one with no two-layer guard. T9a routed it through
+// `lower_ability_ir` (via `ability_ir_at`) and measured a zero full-pool delta;
+// these pin that result so T9b's payload swap — which lands on this exact
+// recognizer — cannot move it silently.
+//
+// Both texts are verbatim MTGJSON, not paraphrases: a paraphrase can take a
+// different parser branch and go green while the real card stays broken.
+
+/// The canonical single-clause prevention spell — the whole card is the
+/// prevention sentence, so the chain has exactly one clause and no `sub_ability`.
+#[test]
+fn fog_prevention_spell() {
+    let (ir, lowered) = parse_two_layer(
+        "Prevent all combat damage that would be dealt this turn.",
+        "Fog",
+        &["Instant"],
+        &[],
+    );
+    insta::assert_json_snapshot!("fog_ir", &ir);
+    insta::assert_json_snapshot!("fog_lowered", &lowered);
+}
+
+/// The multi-clause case the recognizer was written for. The site's own comment
+/// cites this shape verbatim — "preserve any preceding clauses ('You gain 1 life
+/// for each ...')" — because the prevention marker sits in the SECOND sentence,
+/// so a replacement classifier reaching the line first would drop the life gain.
+/// This is the fixture that exercises chain assembly and `lower_ability_ir`'s
+/// pinned chain → finalize → anchor → `sub_link` order, rather than a
+/// degenerate one-clause body that would take the same path either way.
+#[test]
+fn blunt_the_assault_prevention_spell_preserves_preceding_clause() {
+    let (ir, lowered) = parse_two_layer(
+        "You gain 1 life for each creature on the battlefield. Prevent all combat damage that would be dealt this turn.",
+        "Blunt the Assault",
+        &["Instant"],
+        &[],
+    );
+    insta::assert_json_snapshot!("blunt_the_assault_ir", &ir);
+    insta::assert_json_snapshot!("blunt_the_assault_lowered", &lowered);
+}
+
+/// CR 601.2b: a standalone "X can't be 0." annotation paragraph raises the
+/// announced-X floor on the ability printed ABOVE it, and must do so without
+/// converting that ability's node back to the pre-lowered shape.
+///
+/// DISCRIMINATING, and newly so. This line reaches
+/// `DocEmitter::raise_last_spell_min_x`, which pops the last emitted spell item,
+/// edits it, and re-emits it. Its predecessor — the general
+/// `mutate_last_spell(f)` closure mutator — could only hand a closure an
+/// `&mut AbilityDefinition`, so it had to LOWER the popped node first and could
+/// only ever re-emit pre-lowered. Before T9b that was invisible, because the
+/// only IR-native spell producer was unreachable from this line; after the
+/// payload swap nine producers can precede it. Restore the closure mutator and
+/// the `min_x_value` assertion still passes while the node assertion fails —
+/// which is exactly the silent un-conversion this shape guards against.
+///
+/// The prevention line is the fixture because it is a *converted* producer
+/// (U0-39), so `abilities[0]` is genuinely IR-native here; a fallback-parsed
+/// line would emit the pre-lowered shape and make the node assertion vacuous.
+///
+/// Both layers are asserted on purpose. The IR half pins WHERE the floor is
+/// stored (`AbilityShellIr::min_x_value`, pre-lowering); the lowered half pins
+/// that `apply_ability_shell_envelope`'s `max` actually carries it onto the
+/// root, so a floor parked in a shell field nothing reads cannot pass.
+#[test]
+fn a_standalone_x_floor_annotation_raises_an_ir_native_spells_floor() {
+    let (ir, lowered) = parse_two_layer(
+        "Prevent all combat damage that would be dealt this turn.\nX can't be 0.",
+        "Probe",
+        &["Instant"],
+        &[],
+    );
+
+    // Reach-guard: exactly one ability, and it must be the IR-native node —
+    // otherwise the floor assertion below says nothing about the `Spell` arm.
+    assert_eq!(
+        lowered.abilities.len(),
+        1,
+        "expected the prevention spell alone; the annotation paragraph is not an ability, got {:?}",
+        lowered.abilities
+    );
+    assert!(
+        matches!(ir.items[0].node, OracleNodeIr::Spell(_)),
+        "the re-emitted node must stay IR-native, got {:?}",
+        ir.items[0].node
+    );
+
+    assert_eq!(
+        lowered.abilities[0].min_x_value, 1,
+        "the \"X can't be 0.\" annotation must raise the lowered root's floor to 1"
+    );
 }
 
 // ---------------------------------------------------------------------------
