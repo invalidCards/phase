@@ -548,10 +548,10 @@ fn parse_pre_controller_chosen_filter_suffix(input: &str) -> OracleResult<'_, Fi
     .parse(input)
 }
 
-/// CR 121.1 + CR 604.3: "card(s) [you('ve) / your opponents have] drawn this
-/// turn". Reuses the runtime `CardsDrawnThisTurn` quantity ref already wired for
-/// condition checks (Duelist of the Mind CDA) and now for the opponents'-draw
-/// cost reduction (Heliod, the Warped Eclipse).
+/// CR 121.1 + CR 109.5: "card(s) [you('ve) / your opponents have /
+/// that player has] drawn this turn". Reuses the runtime `CardsDrawnThisTurn`
+/// quantity ref already wired for condition checks (Duelist of the Mind CDA)
+/// and now for the opponents'-draw cost reduction (Heliod, the Warped Eclipse).
 ///
 /// The leading "card" word is optionally plural so this combinator serves both
 /// surface forms uniformly: the "the number of *cards* …" count phrase (plural)
@@ -576,6 +576,12 @@ fn parse_number_of_cards_drawn_this_turn(input: &str) -> OracleResult<'_, Quanti
         // CR 121.1: the caster's own draws this turn.
         value(PlayerScope::Controller, tag("you've drawn this turn")),
         value(PlayerScope::Controller, tag("you have drawn this turn")),
+        // CR 109.5 + CR 121.1: "that player" is the live per-recipient scope
+        // of effects such as `DamageEachPlayer`, rather than the caster.
+        value(
+            PlayerScope::ScopedPlayer,
+            tag("that player has drawn this turn"),
+        ),
     ))
     .parse(rest)?;
     Ok((rest, QuantityRef::CardsDrawnThisTurn { player }))
@@ -6216,6 +6222,44 @@ mod tests {
                 "{text:?} must remain Controller-scoped"
             );
         }
+    }
+
+    /// CR 109.5 + CR 121.1: "that player" in a per-player effect is a
+    /// recipient-scoped draw count. The this-turn boundary must remain exact.
+    #[test]
+    fn parse_cards_drawn_this_turn_scoped_player() {
+        for text in [
+            "cards that player has drawn this turn",
+            "the number of cards that player has drawn this turn",
+        ] {
+            let (rest, q) = parse_quantity_ref_complete(text).unwrap();
+            assert_eq!(rest, "", "{text:?} should fully consume");
+            assert_eq!(
+                q,
+                QuantityRef::CardsDrawnThisTurn {
+                    player: PlayerScope::ScopedPlayer,
+                },
+                "{text:?} must bind to the live scoped player"
+            );
+        }
+
+        assert!(
+            parse_quantity_ref_complete("the number of cards that player has drawn last turn")
+                .is_err(),
+            "the this-turn arm must not accept a different time window"
+        );
+
+        let (rest, q) =
+            parse_quantity_ref_complete("the number of cards that player has drawn this turn")
+                .unwrap();
+        assert_eq!(rest, "", "this-turn reach guard should fully consume");
+        assert_eq!(
+            q,
+            QuantityRef::CardsDrawnThisTurn {
+                player: PlayerScope::ScopedPlayer,
+            },
+            "the guarded this-turn form must remain reachable"
+        );
     }
 
     /// CR 601.2f: the for-each cost-mod path (Heliod) routes "card your opponents

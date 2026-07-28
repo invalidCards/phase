@@ -3350,11 +3350,11 @@ fn resolve_ref(
         //      triggering event's own amount, so "roll one or more dice.
         //      <effect> equal to the result(s)" consumes the roll total, not
         //      the combat damage / life change that triggered it.
-        //   3. `extract_amount_from_event(current_trigger_event)` — scalar
+        //   3. `last_effect_counts_by_player` — APNAP per-player counts from
+        //      the preceding effect in the same resolution.
+        //   4. `extract_amount_from_event(current_trigger_event)` — scalar
         //      events with an inherent amount (damage dealt, life changed,
         //      cards drawn, counters added/removed, die rolls).
-        //   4. `last_effect_counts_by_player` — APNAP per-player counts from
-        //      the preceding effect in the same resolution.
         //   5. `last_effect_count` / `last_effect_amount` — sub_ability
         //      continuation fallbacks (e.g. "discard up to N, then draw that
         //      many"; "dealt excess damage this way, add that much {R}").
@@ -3371,14 +3371,11 @@ fn resolve_ref(
             // dice. <effect> equal to the result(s)" consumes the roll total,
             // not the combat damage / life change that triggered it.
             .or(state.die_result_this_resolution)
-            // CR 603.2c: The triggering event's own scalar amount (damage,
-            // life change, cards drawn, counters, die results), plus the CR
-            // 603.4 detection-time fallback for intervening-`if` re-checks
-            // where `current_trigger_event` is still `None`. Both tiers are
-            // suppressed inside `with_reflexive_resolution_scope` (CR 603.12) so
-            // a reflexive ability's "that many" never reads the enclosing
-            // trigger's event while that trigger's resolution is paused.
-            .or_else(|| enclosing_trigger_event_amount(state))
+            // CR 608.2c + CR 109.5: A scoped continuation's per-player
+            // accounting binds "that many" to its current recipient before a
+            // scalar enclosing trigger/event can shadow the recipient's own
+            // result. A present map deliberately returns 0 for a player with
+            // no counted events.
             .or_else(|| {
                 ctx.scoped_player.and_then(|player| {
                     (!state.last_effect_counts_by_player.is_empty()).then(|| {
@@ -3390,6 +3387,14 @@ fn resolve_ref(
                     })
                 })
             })
+            // CR 603.2c: The triggering event's own scalar amount (damage,
+            // life change, cards drawn, counters, die results), plus the CR
+            // 603.4 detection-time fallback for intervening-`if` re-checks
+            // where `current_trigger_event` is still `None`. Both tiers are
+            // suppressed inside `with_reflexive_resolution_scope` (CR 603.12) so
+            // a reflexive ability's "that many" never reads the enclosing
+            // trigger's event while that trigger's resolution is paused.
+            .or_else(|| enclosing_trigger_event_amount(state))
             .or(state.last_effect_count)
             .or(state.last_effect_amount)
             // CR 107.3a + CR 601.2b + CR 602.2b: If "that many" has no live
@@ -14087,6 +14092,43 @@ mod tests {
             qty: QuantityRef::EventContextAmount,
         };
         assert_eq!(resolve_quantity(&state, &expr, PlayerId(0), ObjectId(1)), 5);
+    }
+
+    /// CR 608.2c + CR 109.5: A recipient-scoped "that many" consumes the
+    /// preceding effect's count for that recipient before an enclosing scalar
+    /// event can shadow it.
+    #[test]
+    fn resolve_event_context_amount_prefers_scoped_player_count_over_scalar_event() {
+        let mut state = GameState::new_two_player(42);
+        let scoped_player = PlayerId(1);
+        state.last_effect_counts_by_player = HashMap::from([(scoped_player, 9)]);
+        state.current_trigger_event = Some(crate::types::events::GameEvent::DamageDealt {
+            source_id: ObjectId(1),
+            target: TargetRef::Player(scoped_player),
+            amount: 2,
+            is_combat: false,
+            excess: 0,
+        });
+        let expr = QuantityExpr::Ref {
+            qty: QuantityRef::EventContextAmount,
+        };
+
+        assert_eq!(
+            resolve_quantity_with_ctx(
+                &state,
+                &expr,
+                PlayerId(0),
+                QuantityContext {
+                    entering: None,
+                    source: ObjectId(1),
+                    trigger_source: None,
+                    recipient: None,
+                    scoped_player: Some(scoped_player),
+                },
+            ),
+            9,
+            "the nonempty per-player map must beat the scalar event amount"
+        );
     }
 
     /// CR 603.2c: When both the batched match-count and an event-extracted

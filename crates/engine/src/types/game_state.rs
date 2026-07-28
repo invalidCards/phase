@@ -12674,10 +12674,10 @@ pub struct GameState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_effect_count: Option<i32>,
 
-    /// CR 608.2c + CR 701.9a: Per-player counts produced by the preceding
-    /// effect in the current ability chain. Used by carried-subject
-    /// continuations like "Each player discards ..., then draws that many ..."
-    /// after all players have completed the discard pass.
+    /// CR 608.2c: Per-player counts from the terminal event window of the
+    /// preceding count-producing effect in the current ability chain. Used by
+    /// carried-subject continuations like "Each player discards ..., then draws
+    /// that many ..." after all players have completed the discard pass.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub last_effect_counts_by_player: HashMap<PlayerId, i32>,
 

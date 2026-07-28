@@ -477,6 +477,118 @@ fn ability_chain_has_unimplemented(ability: &AbilityDefinition) -> bool {
             .is_some_and(ability_chain_has_unimplemented)
 }
 
+/// CR 608.2c + CR 701.24a + CR 121.1 + CR 120.3: Molten Psyche's complete
+/// Oracle text keeps the all-player hand-to-library shuffle inside each player
+/// pass, then starts a distinct all-player draw instruction. Its Metalcraft
+/// rider must bind "that player" to the `DamageEachPlayer` recipient rather
+/// than the spell controller.
+#[test]
+fn molten_psyche_full_oracle_text_has_scoped_shuffle_and_recipient_damage() {
+    let parsed = parse_oracle_text(
+        "Each player shuffles the cards from their hand into their library, then draws that many cards.\n\
+         Metalcraft — If you control three or more artifacts, Molten Psyche deals damage to each opponent equal to the number of cards that player has drawn this turn.",
+        "Molten Psyche",
+        &[],
+        &["Sorcery".to_string()],
+        &[],
+    );
+    assert!(
+        parsed.parse_warnings.is_empty(),
+        "Molten Psyche must parse cleanly: {:?}",
+        parsed.parse_warnings
+    );
+    let ability = parsed
+        .abilities
+        .first()
+        .expect("Molten Psyche must produce one spell ability");
+    assert!(
+        parsed
+            .abilities
+            .iter()
+            .all(|ability| !ability_chain_has_unimplemented(ability)),
+        "Molten Psyche must not retain an Unimplemented node: {:#?}",
+        parsed.abilities
+    );
+    assert_eq!(ability.player_scope, Some(PlayerFilter::All));
+    assert!(matches!(
+        &*ability.effect,
+        Effect::ChangeZoneAll {
+            origin: Some(Zone::Hand),
+            destination: Zone::Library,
+            target: TargetFilter::ScopedPlayer,
+            ..
+        }
+    ));
+
+    let shuffle = ability
+        .sub_ability
+        .as_deref()
+        .expect("hand move must continue to its terminal shuffle");
+    assert!(matches!(
+        &*shuffle.effect,
+        Effect::Shuffle {
+            target: TargetFilter::ScopedPlayer
+        }
+    ));
+
+    let draw = shuffle
+        .sub_ability
+        .as_deref()
+        .expect("shuffle must be followed by the all-player draw instruction");
+    assert_eq!(draw.player_scope, Some(PlayerFilter::All));
+    assert!(matches!(
+        &*draw.effect,
+        Effect::Draw {
+            count: QuantityExpr::Ref {
+                qty: QuantityRef::EventContextAmount
+            },
+            target: TargetFilter::Controller,
+        }
+    ));
+
+    fn find_damage_each_player(ability: &AbilityDefinition) -> Option<&AbilityDefinition> {
+        if matches!(*ability.effect, Effect::DamageEachPlayer { .. }) {
+            return Some(ability);
+        }
+        ability
+            .sub_ability
+            .as_deref()
+            .and_then(find_damage_each_player)
+            .or_else(|| {
+                ability
+                    .else_ability
+                    .as_deref()
+                    .and_then(find_damage_each_player)
+            })
+    }
+
+    let damage = parsed
+        .abilities
+        .iter()
+        .find_map(find_damage_each_player)
+        .unwrap_or_else(|| {
+            panic!(
+                "Metalcraft rider must lower to DamageEachPlayer: {:#?}",
+                parsed.abilities
+            )
+        });
+    assert!(
+        damage.condition.is_some(),
+        "Metalcraft rider must stay conditional"
+    );
+    assert!(matches!(
+        &*damage.effect,
+        Effect::DamageEachPlayer {
+            player_filter: PlayerFilter::Opponent,
+            amount: QuantityExpr::Ref {
+                qty: QuantityRef::CardsDrawnThisTurn {
+                    player: PlayerScope::ScopedPlayer,
+                },
+            },
+        }
+    ));
+}
+
 /// CR 510.1a + CR 613.11: Plagon, Lord of the Beach — the singular one-shot
 /// EFFECT form "Target creature you control assigns combat damage equal to its
 /// toughness rather than its power this turn". The effect pipeline deconjugates
@@ -11503,6 +11615,177 @@ fn effect_its_controller_manifests_top_card() {
         "expected subject-predicate Manifest {{ ParentTargetController, count: 1, enters_under: None }}, got: {:?}",
         sub.effect
     );
+}
+
+/// The all-player shuffle target normalizer owns only its immediate
+/// hand-to-library move/shuffle pair. It must neither retarget nearby library
+/// moves nor overwrite a concrete/anaphoric player target.
+#[test]
+fn all_player_hand_shuffle_normalizer_requires_an_immediate_defaulted_pair() {
+    fn move_to_library(origin: Zone, target: TargetFilter) -> Effect {
+        Effect::ChangeZoneAll {
+            origin: Some(origin),
+            destination: Zone::Library,
+            target,
+            enters_under: None,
+            enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+            enter_with_counters: vec![],
+            face_down_profile: None,
+            library_position: None,
+            random_order: false,
+        }
+    }
+
+    fn all_player_chain(effects: Vec<Effect>) -> AbilityDefinition {
+        let mut effects = effects.into_iter().rev();
+        let mut chain = AbilityDefinition::new(
+            AbilityKind::Spell,
+            effects.next().expect("test chain has an effect"),
+        );
+        for effect in effects {
+            let mut head = AbilityDefinition::new(AbilityKind::Spell, effect);
+            head.sub_ability = Some(Box::new(chain));
+            chain = head;
+        }
+        chain.player_scope = Some(PlayerFilter::All);
+        chain
+    }
+
+    let mut exact = all_player_chain(vec![
+        move_to_library(Zone::Hand, TargetFilter::Controller),
+        Effect::Shuffle {
+            target: TargetFilter::Any,
+        },
+    ]);
+    normalize_all_player_hand_to_library_shuffle_targets(&mut exact);
+    assert!(matches!(
+        &*exact.effect,
+        Effect::ChangeZoneAll {
+            target: TargetFilter::ScopedPlayer,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &*exact.sub_ability.expect("immediate shuffle").effect,
+        Effect::Shuffle {
+            target: TargetFilter::ScopedPlayer,
+        }
+    ));
+
+    let mut non_hand = all_player_chain(vec![
+        move_to_library(Zone::Graveyard, TargetFilter::Controller),
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        },
+    ]);
+    normalize_all_player_hand_to_library_shuffle_targets(&mut non_hand);
+    assert!(matches!(
+        &*non_hand.effect,
+        Effect::ChangeZoneAll {
+            target: TargetFilter::Controller,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &*non_hand
+            .sub_ability
+            .expect("shuffle after non-hand move")
+            .effect,
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        }
+    ));
+
+    let mut anaphoric_target = all_player_chain(vec![
+        move_to_library(Zone::Hand, TargetFilter::ParentTargetController),
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        },
+    ]);
+    normalize_all_player_hand_to_library_shuffle_targets(&mut anaphoric_target);
+    assert!(matches!(
+        &*anaphoric_target.effect,
+        Effect::ChangeZoneAll {
+            target: TargetFilter::ParentTargetController,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &*anaphoric_target
+            .sub_ability
+            .expect("shuffle after anaphoric move")
+            .effect,
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        }
+    ));
+
+    let mut intervening_move = all_player_chain(vec![
+        move_to_library(Zone::Hand, TargetFilter::Controller),
+        move_to_library(Zone::Graveyard, TargetFilter::Any),
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        },
+    ]);
+    normalize_all_player_hand_to_library_shuffle_targets(&mut intervening_move);
+    assert!(matches!(
+        &*intervening_move.effect,
+        Effect::ChangeZoneAll {
+            target: TargetFilter::Controller,
+            ..
+        }
+    ));
+    let intermediate = intervening_move
+        .sub_ability
+        .as_deref()
+        .expect("intervening library move");
+    assert!(matches!(
+        &*intermediate.effect,
+        Effect::ChangeZoneAll {
+            target: TargetFilter::Any,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &*intermediate
+            .sub_ability
+            .as_deref()
+            .expect("terminal shuffle")
+            .effect,
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        }
+    ));
+
+    let mut intervening_draw = all_player_chain(vec![
+        move_to_library(Zone::Hand, TargetFilter::Controller),
+        Effect::Draw {
+            count: QuantityExpr::Fixed { value: 1 },
+            target: TargetFilter::Controller,
+        },
+        Effect::Shuffle {
+            target: TargetFilter::Controller,
+        },
+    ]);
+    normalize_all_player_hand_to_library_shuffle_targets(&mut intervening_draw);
+    assert!(matches!(
+        &*intervening_draw.effect,
+        Effect::ChangeZoneAll {
+            target: TargetFilter::Controller,
+            ..
+        }
+    ));
+    assert!(matches!(
+        &*intervening_draw
+            .sub_ability
+            .as_deref()
+            .expect("intervening draw")
+            .effect,
+        Effect::Draw {
+            target: TargetFilter::Controller,
+            ..
+        }
+    ));
 }
 
 #[test]

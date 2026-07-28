@@ -25232,6 +25232,56 @@ fn rewrite_condition_quantity_expr(expr: &mut QuantityExpr) {
     }
 }
 
+/// CR 608.2c + CR 701.24a: An all-player whole-hand shuffle is one local
+/// instruction per player: move that player's hand into their library, then
+/// shuffle that same library. The ordinary target walker intentionally excludes
+/// `Shuffle`, so normalize only the immediate exact structural pair rather than
+/// making shuffle targets globally rewritable.
+fn normalize_all_player_hand_to_library_shuffle_targets(def: &mut AbilityDefinition) {
+    if !matches!(def.player_scope, Some(PlayerFilter::All)) {
+        return;
+    }
+
+    let Some(shuffle) = def.sub_ability.as_deref_mut() else {
+        return;
+    };
+
+    let (
+        Effect::ChangeZoneAll {
+            origin: Some(Zone::Hand),
+            destination: Zone::Library,
+            target: move_target,
+            ..
+        },
+        Effect::Shuffle {
+            target: shuffle_target,
+        },
+    ) = (&mut *def.effect, &mut *shuffle.effect)
+    else {
+        return;
+    };
+
+    // Only parser-default controller/any targets may be rebound. A concrete
+    // player class or anaphoric target is semantically meaningful and must not
+    // be clobbered merely because it precedes a shuffle.
+    if !matches!(
+        move_target,
+        TargetFilter::Controller | TargetFilter::Any | TargetFilter::ScopedPlayer
+    ) || !matches!(
+        shuffle_target,
+        TargetFilter::Controller | TargetFilter::Any | TargetFilter::ScopedPlayer
+    ) {
+        return;
+    }
+
+    if matches!(move_target, TargetFilter::Controller | TargetFilter::Any) {
+        *move_target = TargetFilter::ScopedPlayer;
+    }
+    if matches!(shuffle_target, TargetFilter::Controller | TargetFilter::Any) {
+        *shuffle_target = TargetFilter::ScopedPlayer;
+    }
+}
+
 fn rewrite_player_scope_refs(def: &mut AbilityDefinition) {
     fn rewrite_condition(condition: &mut AbilityCondition) {
         match condition {
@@ -25352,6 +25402,7 @@ fn rewrite_player_scope_refs(def: &mut AbilityDefinition) {
     if matches!(def.player_scope, Some(PlayerFilter::All)) {
         each_target_filter_mut(&mut def.effect, &mut rewrite_filter_controller_to_scoped);
     }
+    normalize_all_player_hand_to_library_shuffle_targets(def);
     // CR 406.2 + CR 610.3: Under the `OwnersOfCardsExiledBySource` scope ("the
     // owner of each card exiled with ~ puts that card on the bottom of their
     // library", Trial of a Time Lord IV), the "that card" anaphor (parsed as the
