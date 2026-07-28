@@ -15700,6 +15700,49 @@ mod tests {
         }
     }
 
+    /// CR 603.4 + CR 109.2: Deathbringer Regent's threshold counts any
+    /// player's other creatures on the battlefield.
+    #[test]
+    fn test_there_are_n_or_more_other_creatures_on_battlefield() {
+        let (rest, c) =
+            parse_inner_condition("there are five or more other creatures on the battlefield")
+                .unwrap();
+        assert_eq!(rest, "");
+        match c {
+            StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty: QuantityRef::ObjectCount { filter },
+                    },
+                comparator: Comparator::GE,
+                rhs: QuantityExpr::Fixed { value: 5 },
+            } => match filter {
+                TargetFilter::Typed(tf) => {
+                    assert!(
+                        tf.type_filters.contains(&TypeFilter::Creature),
+                        "expected creature filter, got {:?}",
+                        tf.type_filters
+                    );
+                    assert_eq!(tf.controller, None);
+                    assert!(
+                        tf.properties.contains(&FilterProp::Another),
+                        "expected Another prop, got {:?}",
+                        tf.properties
+                    );
+                    assert!(
+                        tf.properties.contains(&FilterProp::InZone {
+                            zone: Zone::Battlefield
+                        }),
+                        "expected battlefield-only count, got {:?}",
+                        tf.properties
+                    );
+                }
+                other => panic!("expected typed creature filter, got {other:?}"),
+            },
+            other => panic!("expected ObjectCount GE 5, got {other:?}"),
+        }
+    }
+
     /// SEMANTIC CORRECTNESS: the there-form scopes to exactly the stated
     /// objects. "there are no Zombies on the battlefield" (Sarcomancy) counts
     /// only the Zombie subtype, NOT all creatures.

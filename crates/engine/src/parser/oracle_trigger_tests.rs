@@ -24,6 +24,48 @@ use crate::types::mana::{ManaColor, ManaCost, ManaType, ManaUnit};
 use crate::types::replacements::ReplacementEvent;
 use crate::types::statics::{CastFrequency, StaticMode};
 
+#[test]
+fn extract_hand_cast_battlefield_threshold_leaves_effect_text() {
+    let (cleaned, condition) = extract_if_condition(
+        "if you cast it from your hand and there are five or more other creatures on the battlefield, destroy all other creatures",
+    );
+    assert_eq!(cleaned, "destroy all other creatures");
+
+    let TriggerCondition::And { conditions } = condition.expect("expected conjunction") else {
+        panic!("expected cast-and-threshold trigger condition");
+    };
+    assert_eq!(conditions.len(), 2);
+    assert!(matches!(
+        &conditions[0],
+        TriggerCondition::WasCast {
+            zone: Some(crate::types::zones::Zone::Hand),
+            controller: Some(ControllerRef::You),
+            owner: Some(ControllerRef::You),
+        }
+    ));
+    let TriggerCondition::QuantityComparison {
+        lhs:
+            QuantityExpr::Ref {
+                qty:
+                    QuantityRef::ObjectCount {
+                        filter: TargetFilter::Typed(filter),
+                    },
+            },
+        comparator: Comparator::GE,
+        rhs: QuantityExpr::Fixed { value: 5 },
+    } = &conditions[1]
+    else {
+        panic!("expected other-creature threshold, got {:?}", conditions[1]);
+    };
+    assert_eq!(filter.type_filters, vec![TypeFilter::Creature]);
+    assert!(filter
+        .properties
+        .contains(&FilterProp::OtherThanTriggerObject));
+    assert!(filter.properties.contains(&FilterProp::InZone {
+        zone: crate::types::zones::Zone::Battlefield,
+    }));
+}
+
 // --- Fix B: damage-recipient qualifier (player axis preserved + object axis added) ---
 
 #[test]
