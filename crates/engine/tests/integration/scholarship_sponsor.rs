@@ -258,6 +258,15 @@ fn scholarship_sponsor_tied_land_counts_open_no_search() {
         .collect();
 
     runner.cast(sponsor).resolve();
+    assert_eq!(
+        runner.state().objects[&sponsor].zone,
+        Zone::Battlefield,
+        "the sponsor must resolve so its ETB reaches the tied-land branch"
+    );
+    assert!(
+        runner.state().pending_scoped_library_search.is_none(),
+        "a tie must finish without parking a scoped-search frame"
+    );
     assert!(
         !matches!(runner.state().waiting_for, WaitingFor::SearchChoice { .. }),
         "a three-way tie has no player with fewer lands and must not open a search"
