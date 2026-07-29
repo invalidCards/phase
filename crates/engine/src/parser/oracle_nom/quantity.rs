@@ -963,22 +963,22 @@ pub fn parse_quantity_ref(input: &str) -> OracleResult<'_, QuantityRef> {
 /// exactly as the for-each battlefield-count fallback does
 /// (`oracle_quantity::parse_type_phrase_with_ctx`) — this arm therefore produces
 /// byte-identical `ObjectCount` filters for any for-each clause it now intercepts
-/// at the shared `parse_quantity_ref` seam. Guarded two ways so it stays strictly
-/// additive on that high-traffic surface: the phrase must END with the battlefield
-/// locative (rejecting "…on the battlefield or in the command zone", which its
-/// dedicated commander-mana-value arm claims), and the type phrase must fully
-/// consume and be non-`Any`.
+/// at the shared `parse_quantity_ref` seam. Its remainder is either empty or the
+/// trigger clause's leading comma, allowing callers to retain the effect text
+/// without re-parsing this grammar. The competing zone-disjunction form remains
+/// rejected so its dedicated commander-mana-value arm can claim it.
 fn parse_type_count_on_battlefield(input: &str) -> OracleResult<'_, QuantityRef> {
     let (after_anchor, _) = take_until(" on the battlefield").parse(input)?;
-    let (after_anchor, _) = tag(" on the battlefield").parse(after_anchor)?;
-    if !after_anchor.trim().is_empty() {
+    let (rest, _) = tag(" on the battlefield").parse(after_anchor)?;
+    if !rest.is_empty() && !rest.starts_with(',') {
         return Err(oracle_err(input));
     }
-    let (filter, type_rest) = parse_type_phrase(input);
+    let type_text = &input[..input.len() - after_anchor.len()];
+    let (filter, type_rest) = parse_type_phrase(type_text);
     if matches!(filter, TargetFilter::Any) || !type_rest.trim().is_empty() {
         return Err(oracle_err(input));
     }
-    Ok(("", QuantityRef::ObjectCount { filter }))
+    Ok((rest, QuantityRef::ObjectCount { filter }))
 }
 
 /// CR 109.3 + CR 205.3m: Parse "the greatest/fewest/total number of
@@ -5500,11 +5500,12 @@ mod tests {
     }
 
     #[test]
-    fn type_count_on_battlefield_rejects_comma_tail() {
-        assert!(parse_type_count_on_battlefield(
-            "other creatures on the battlefield, then draw a card"
-        )
-        .is_err());
+    fn type_count_on_battlefield_preserves_comma_tail() {
+        let (rest, parsed) =
+            parse_type_count_on_battlefield("other creatures on the battlefield, then draw a card")
+                .expect("a comma starts the next trigger clause");
+        assert_eq!(rest, ", then draw a card");
+        assert!(matches!(parsed, QuantityRef::ObjectCount { .. }));
     }
 
     #[test]

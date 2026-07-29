@@ -4819,26 +4819,7 @@ fn parse_cast_and_condition_intervening_if(input: &str) -> OracleResult<'_, Trig
     ))
     .parse(rest)?;
     let (rest, _) = tag(" and ").parse(rest)?;
-    let (rest, sc) = match parse_inner_condition(rest) {
-        Ok(parsed) => parsed,
-        // Deathbringer Regent's threshold ends at the trigger-clause comma.
-        // Keep this boundary narrowly scoped to the exact "there are … on the
-        // battlefield," form: a generic comma split would truncate valid
-        // comma-separated conditions (for example source-zone Oxford lists).
-        Err(_) => {
-            let (_, _) = tag("there are ").parse(rest)?;
-            let (after_prefix, _) = take_until(" on the battlefield,").parse(rest)?;
-            let condition_len = rest.len() - after_prefix.len() + " on the battlefield".len();
-            let condition_text = &rest[..condition_len];
-            let comma_tail = &rest[condition_len..];
-            let (condition_rest, sc) = parse_inner_condition(condition_text)?;
-            if !condition_rest.trim().is_empty() {
-                return Err(oracle_err(input));
-            }
-            (comma_tail, sc)
-        }
-        Err(error) => return Err(error),
-    };
+    let (rest, sc) = parse_inner_condition(rest)?;
     let cond_b = static_condition_to_trigger_condition(&sc).ok_or_else(|| oracle_err(input))?;
     let cond_a = zone.map_or(
         TriggerCondition::WasCast {
