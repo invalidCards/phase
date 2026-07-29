@@ -11103,6 +11103,90 @@ mod tests {
         );
     }
 
+    /// CR 115.1a + CR 108.3: The sole nonbattlefield per-opponent fanout class
+    /// binds each graveyard card to its immediately preceding opponent target.
+    /// The positive paired cards prove the path is reachable; a wrong-owner card
+    /// and a battlefield lookalike prove neither owner nor zone is widened.
+    #[test]
+    fn per_opponent_graveyard_fanout_pairs_only_each_opponents_typed_card() {
+        use crate::types::ability::{CardPlayMode, CastFromZoneDriver};
+
+        let mut state = GameState::new(FormatConfig::standard(), 3, 42);
+        let add_instant = |state: &mut GameState, owner, zone, card_id| {
+            let id = create_object(
+                state,
+                CardId(card_id),
+                owner,
+                format!("Instant {card_id}"),
+                zone,
+            );
+            state
+                .objects
+                .get_mut(&id)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Instant);
+            id
+        };
+        let p1_graveyard = add_instant(&mut state, PlayerId(1), Zone::Graveyard, 1);
+        let p2_graveyard = add_instant(&mut state, PlayerId(2), Zone::Graveyard, 2);
+        let _wrong_owner = add_instant(&mut state, PlayerId(0), Zone::Graveyard, 3);
+        let _battlefield_lookalike = add_instant(&mut state, PlayerId(1), Zone::Battlefield, 4);
+
+        let filter = TargetFilter::Typed(
+            TypedFilter::new(TypeFilter::Instant)
+                .controller(ControllerRef::TargetPlayer)
+                .properties(vec![
+                    FilterProp::Owned {
+                        controller: ControllerRef::TargetPlayer,
+                    },
+                    FilterProp::InZone {
+                        zone: Zone::Graveyard,
+                    },
+                ]),
+        );
+        let mut ability = ResolvedAbility::new(
+            Effect::CastFromZone {
+                target: filter,
+                without_paying_mana_cost: true,
+                mode: CardPlayMode::Cast,
+                cast_transformed: false,
+                alt_ability_cost: None,
+                constraint: None,
+                duration: None,
+                driver: CastFromZoneDriver::DuringResolution,
+                mana_spend_permission: None,
+            },
+            vec![],
+            ObjectId(900),
+            PlayerId(0),
+        );
+        ability.target_choice_timing = TargetChoiceTiming::Stack;
+        ability.multi_target = Some(MultiTargetSpec::bounded(
+            0,
+            QuantityExpr::Ref {
+                qty: QuantityRef::PlayerCount {
+                    filter: PlayerFilter::Opponent,
+                },
+            },
+        ));
+
+        let slots = build_target_slots(&state, &ability).expect("paired graveyard slots");
+        assert_eq!(slots.len(), 4, "one player/object pair per opponent");
+        assert_eq!(slots[0].legal_targets, vec![TargetRef::Player(PlayerId(1))]);
+        assert_eq!(
+            slots[1].legal_targets,
+            vec![TargetRef::Object(p1_graveyard)],
+            "P1's object slot excludes the wrong owner and battlefield lookalike"
+        );
+        assert_eq!(slots[2].legal_targets, vec![TargetRef::Player(PlayerId(2))]);
+        assert_eq!(
+            slots[3].legal_targets,
+            vec![TargetRef::Object(p2_graveyard)]
+        );
+    }
+
     #[test]
     fn per_opponent_gain_control_runtime_transfers_all_objects_and_preserves_tail() {
         let mut state = GameState::new(FormatConfig::standard(), 3, 42);

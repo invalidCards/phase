@@ -1795,8 +1795,8 @@ pub(crate) fn assemble_effect_chain(ir: &EffectChainIr) -> AbilityDefinition {
         // destination-replacement on the cast spell. Fold the canonical rider
         // onto the prior cast so the runtime stamps the redirect, intercepting it
         // before the generic chain assembly mistakes a `PutAtLibraryPosition{
-        // Bottom}` for the Sanwell free-cast bottom-cleanup. Exile is left to its
-        // existing clean path (the helper declines it).
+        // Bottom}` for the Sanwell free-cast bottom-cleanup. Every destination,
+        // including exile, becomes the same ParentTarget rider shape.
         if let Some(dest) = parse_spell_graveyard_replacement_rider(
             &clause_ir
                 .source

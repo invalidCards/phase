@@ -1028,11 +1028,10 @@ pub(super) fn attach_any_color_mana_rider_to_previous_play_from_exile(
 /// count 0, and duplicating it into a bogus `else_ability`). Building the rider
 /// directly here bypasses that generic mis-route.
 ///
-/// The exile destination is intentionally NOT handled here: it already lowers to
-/// the clean `ChangeZone{Exile, ParentTarget}` sub-ability via the general
-/// anaphor rebind (Torrential Gearhulk), and its effect shape never trips the
-/// bottom-cleanup detector. Returns `false` (no fold) for exile so that path is
-/// left undisturbed.
+/// Exile uses the same canonical `ParentTarget` rider shape as library/hand.
+/// That matters for "a spell cast this way": its grammatical subject is not a
+/// pronoun for the generic anaphor rebind, but the rider must still attach to
+/// the preceding cast rather than become a source-global replacement.
 pub(super) fn attach_graveyard_redirect_rider_to_prior_cast_from_zone(
     defs: &mut [AbilityDefinition],
     dest: SpellStackToGraveyardReplacement,
@@ -1058,8 +1057,21 @@ pub(super) fn attach_graveyard_redirect_rider_to_prior_cast_from_zone(
             face_down_profile: None,
             enters_modified_if: None,
         },
-        // Exile keeps its existing clean `ChangeZone{Exile, ParentTarget}` path.
-        SpellStackToGraveyardReplacement::Exile => return false,
+        SpellStackToGraveyardReplacement::Exile => Effect::ChangeZone {
+            origin: Some(Zone::Stack),
+            destination: Zone::Exile,
+            target: TargetFilter::ParentTarget,
+            owner_library: false,
+            enter_transformed: false,
+            enters_under: None,
+            enter_tapped: EtbTapState::Unspecified,
+            enters_attacking: false,
+            up_to: false,
+            enter_with_counters: vec![],
+            conditional_enter_with_counters: vec![],
+            face_down_profile: None,
+            enters_modified_if: None,
+        },
     };
     let Some(prev) = defs.last_mut() else {
         return false;
@@ -3958,8 +3970,40 @@ fn is_per_opponent_target_fanout_clause(clause: &ParsedEffectClause) -> bool {
     }
     clause.effect.target_filter().is_some_and(|filter| {
         target_filter_controller_ref(filter) == Some(ControllerRef::TargetPlayer)
-            && target_filter_is_single_object_target(filter)
+            && (target_filter_is_single_object_target(filter)
+                || target_filter_is_explicit_target_player_graveyard_card(filter))
     })
+}
+
+/// CR 115.1a + CR 108.3: The per-opponent fanout normally targets battlefield
+/// objects. This is the sole nonbattlefield exception: an explicit typed card
+/// target in a paired opponent's graveyard. An `Or` is allowed only when every
+/// branch independently carries that complete binding; it must not inherit the
+/// controller, ownership, or zone restriction from a sibling. This keeps "that
+/// player's graveyard" tied to the immediately preceding player target instead
+/// of broadly enabling all nonbattlefield fanout filters.
+pub(super) fn target_filter_is_explicit_target_player_graveyard_card(
+    filter: &TargetFilter,
+) -> bool {
+    match filter {
+        TargetFilter::Typed(tf) => {
+            tf.controller == Some(ControllerRef::TargetPlayer)
+                && !tf.type_filters.is_empty()
+                && tf.properties.contains(&FilterProp::Owned {
+                    controller: ControllerRef::TargetPlayer,
+                })
+                && tf.properties.contains(&FilterProp::InZone {
+                    zone: Zone::Graveyard,
+                })
+        }
+        TargetFilter::Or { filters } => {
+            !filters.is_empty()
+                && filters
+                    .iter()
+                    .all(target_filter_is_explicit_target_player_graveyard_card)
+        }
+        _ => false,
+    }
 }
 
 pub(crate) fn target_filter_is_single_object_target(filter: &TargetFilter) -> bool {
