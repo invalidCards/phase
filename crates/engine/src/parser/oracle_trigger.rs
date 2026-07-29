@@ -21,7 +21,9 @@ use super::oracle_ir::trigger::{
 };
 use super::oracle_modal::try_parse_inline_modal_ir;
 use super::oracle_nom::condition::parse_elided_subject_state_condition;
-use super::oracle_nom::condition::parse_inner_condition;
+use super::oracle_nom::condition::{
+    parse_inner_condition, parse_there_are_battlefield_count_clause,
+};
 use super::oracle_nom::condition::{parse_source_counters_exist, parse_source_has_counters};
 use super::oracle_nom::error::{oracle_err, OracleResult};
 use super::oracle_nom::filter::{
@@ -4819,7 +4821,11 @@ fn parse_cast_and_condition_intervening_if(input: &str) -> OracleResult<'_, Trig
     ))
     .parse(rest)?;
     let (rest, _) = tag(" and ").parse(rest)?;
-    let (rest, sc) = parse_inner_condition(rest)?;
+    // First use the complete shared condition grammar: some conditions own
+    // commas themselves (for example, multi-zone lists). Only the strict
+    // battlefield-count noun phrase needs the clause-aware fallback below.
+    let (rest, sc) =
+        parse_inner_condition(rest).or_else(|_| parse_there_are_battlefield_count_clause(rest))?;
     let cond_b = static_condition_to_trigger_condition(&sc).ok_or_else(|| oracle_err(input))?;
     let cond_a = zone.map_or(
         TriggerCondition::WasCast {

@@ -762,16 +762,18 @@ fn ran_and_shaw_opponent_graveyard_dragon_uncounted() {
 // R — Deathbringer Regent (Channel B, zoned cast-and-condition conjunction)
 // ===========================================================================
 
-/// Hand-cast Regent with five other creatures: both intervening-if conjuncts
-/// hold, so the ETB destroys every other creature while retaining Regent.
+/// Hand-cast Regent with five other creatures split across both players:
+/// both intervening-if conjuncts hold, so the ETB destroys every other
+/// creature while retaining Regent.
 #[test]
 fn deathbringer_regent_hand_cast_with_five_other_creatures_wipes_them() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let others: Vec<_> = (0..5)
         .map(|i| {
+            let controller = if i == 4 { P1 } else { P0 };
             scenario
-                .add_creature(P0, &format!("Other Creature {i}"), 1, 1)
+                .add_creature(controller, &format!("Other Creature {i}"), 1, 1)
                 .id()
         })
         .collect();
