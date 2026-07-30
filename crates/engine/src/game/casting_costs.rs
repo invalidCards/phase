@@ -9317,17 +9317,13 @@ fn handle_resolution_cast_success(
             remaining_mv_budget,
             filter,
             zones,
-            exile_instead_of_graveyard,
+            graveyard_replacement,
             source,
             member_pool,
         } => {
-            if exile_instead_of_graveyard {
-                // CR 614.1a: Invoke Calamity's free-cast rider redirects to exile.
-                apply_spell_graveyard_replacement_rider(
-                    state,
-                    cast_object,
-                    SpellStackToGraveyardReplacement::Exile,
-                );
+            if let Some(destination) = graveyard_replacement.clone() {
+                // CR 614.1a: Carry the exact printed replacement destination.
+                apply_spell_graveyard_replacement_rider(state, cast_object, destination);
             }
             let casts_left = remaining_casts.saturating_sub(1);
             // CR 202.3: shrink the shared budget by what was actually spent on
@@ -9362,7 +9358,7 @@ fn handle_resolution_cast_success(
                     remaining_mv_budget: budget_left,
                     filter,
                     zones,
-                    exile_instead_of_graveyard,
+                    graveyard_replacement,
                     source,
                     member_pool,
                 },

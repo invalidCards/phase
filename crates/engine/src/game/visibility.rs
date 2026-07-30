@@ -1113,7 +1113,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
                 remaining_mv_budget,
                 ref filter,
                 ref zones,
-                exile_instead_of_graveyard,
+                ref graveyard_replacement,
                 source,
                 ref member_pool,
             },
@@ -1128,7 +1128,7 @@ pub fn filter_state_for_viewer(state: &GameState, viewer: PlayerId) -> GameState
                     remaining_mv_budget,
                     filter: filter.clone(),
                     zones: zones.clone(),
-                    exile_instead_of_graveyard,
+                    graveyard_replacement: graveyard_replacement.clone(),
                     source,
                     // CR 400.2: the member pool can reference the same private
                     // candidates (a hand/graveyard window would leak eligible
@@ -4858,7 +4858,9 @@ mod tests {
                 remaining_mv_budget: Some(6),
                 filter: crate::types::ability::TargetFilter::Any,
                 zones: vec![Zone::Graveyard, Zone::Hand],
-                exile_instead_of_graveyard: true,
+                graveyard_replacement: Some(
+                    crate::types::ability::SpellStackToGraveyardReplacement::Exile,
+                ),
                 source: crate::types::game_state::zero_object_id(),
                 member_pool: vec![hand_candidate],
             },
@@ -4894,7 +4896,7 @@ mod tests {
                         candidates,
                         remaining_casts,
                         remaining_mv_budget,
-                        exile_instead_of_graveyard,
+                        graveyard_replacement,
                         member_pool,
                         ..
                     },
@@ -4914,7 +4916,10 @@ mod tests {
                 assert_eq!(member_pool, vec![ObjectId(0)]);
                 assert_eq!(remaining_casts, 2);
                 assert_eq!(remaining_mv_budget, Some(6));
-                assert!(exile_instead_of_graveyard);
+                assert_eq!(
+                    graveyard_replacement.as_ref(),
+                    Some(&crate::types::ability::SpellStackToGraveyardReplacement::Exile)
+                );
             }
             other => panic!("expected FreeCastWindow for opponent, got {other:?}"),
         }

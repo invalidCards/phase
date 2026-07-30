@@ -40515,7 +40515,7 @@ fn plargg_and_nassari_full_trigger_chain_choose_then_cast_others() {
         ref filter,
         ref zones,
         max_total_mv,
-        exile_instead_of_graveyard,
+        ref graveyard_replacement,
     } = *cast.effect
     else {
         panic!("expected FreeCastFromZones tail, got {:?}", cast.effect);
@@ -40526,7 +40526,7 @@ fn plargg_and_nassari_full_trigger_chain_choose_then_cast_others() {
     );
     assert_eq!(*zones, vec![Zone::Exile]);
     assert_eq!(max_total_mv, None);
-    assert!(!exile_instead_of_graveyard);
+    assert!(graveyard_replacement.is_none());
     let TargetFilter::And { filters: ref cf } = *filter else {
         panic!("expected And cast filter, got {filter:?}");
     };
@@ -41475,10 +41475,6 @@ fn spell_graveyard_replacement_rider_recognises_determiner_and_destination_varia
             SpellStackToGraveyardReplacement::Exile,
         ),
         (
-            "if a spell cast this way would be put into a graveyard, exile it instead.",
-            SpellStackToGraveyardReplacement::Exile,
-        ),
-        (
             "if that spell would be put into a graveyard, put it on the bottom of its owner's library instead",
             SpellStackToGraveyardReplacement::Library {
                 position: LibraryPosition::Bottom,
@@ -41505,6 +41501,44 @@ fn spell_graveyard_replacement_rider_recognises_determiner_and_destination_varia
     assert_eq!(
         parse_spell_graveyard_replacement_rider("draw a card instead"),
         None,
+    );
+}
+
+/// CR 614.1a + CR 608.2g: "a spell cast this way" is the multi-cast form,
+/// not the legacy singular `that spell` rider. It must parse all destinations
+/// through its own all-consuming route before assembly decides whether a prior
+/// free-cast window can absorb it.
+#[test]
+fn spells_cast_this_way_graveyard_replacement_rider_recognises_destinations() {
+    use crate::types::ability::{LibraryPosition, SpellStackToGraveyardReplacement};
+    for (clause, expected) in [
+        (
+            "if a spell cast this way would be put into a graveyard, exile it instead.",
+            SpellStackToGraveyardReplacement::Exile,
+        ),
+        (
+            "if a spell cast this way would be put into a graveyard, put it on the bottom of its owner's library instead",
+            SpellStackToGraveyardReplacement::Library {
+                position: LibraryPosition::Bottom,
+            },
+        ),
+        (
+            "if a spell cast this way would be put into a graveyard, return it to its owner's hand instead",
+            SpellStackToGraveyardReplacement::Hand,
+        ),
+    ] {
+        assert_eq!(
+            parse_spells_cast_this_way_graveyard_replacement_rider(clause),
+            Some(expected),
+            "should recognise multi-cast rider clause: {clause:?}"
+        );
+    }
+    assert_eq!(
+        parse_spells_cast_this_way_graveyard_replacement_rider(
+            "if a spell cast this way would be put into a graveyard, exile it instead, then draw a card",
+        ),
+        None,
+        "the exact multi-cast rider must not partially consume a larger clause"
     );
 }
 
@@ -41585,7 +41619,7 @@ fn per_opponent_graveyard_free_cast_uses_paired_fanout_and_exile_rider() {
             .as_deref()
             .map(|rider| rider.effect.as_ref()),
         Some(Effect::ChangeZone {
-            origin: Some(Zone::Stack),
+            origin: None,
             destination: Zone::Exile,
             target: TargetFilter::ParentTarget,
             ..

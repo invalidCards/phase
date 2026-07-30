@@ -1028,10 +1028,11 @@ pub(super) fn attach_any_color_mana_rider_to_previous_play_from_exile(
 /// count 0, and duplicating it into a bogus `else_ability`). Building the rider
 /// directly here bypasses that generic mis-route.
 ///
-/// Exile uses the same canonical `ParentTarget` rider shape as library/hand.
-/// That matters for "a spell cast this way": its grammatical subject is not a
-/// pronoun for the generic anaphor rebind, but the rider must still attach to
-/// the preceding cast rather than become a source-global replacement.
+/// The generic singular-spell route intentionally leaves exile to the existing
+/// `ChangeZone{Exile, ParentTarget}` anaphor path. The exact plural "a spell
+/// cast this way" form is handled separately by
+/// `attach_graveyard_redirect_rider_to_prior_free_cast_from_zones`, which is
+/// the only route that may attach stack/ParentTarget metadata for that wording.
 pub(super) fn attach_graveyard_redirect_rider_to_prior_cast_from_zone(
     defs: &mut [AbilityDefinition],
     dest: SpellStackToGraveyardReplacement,
@@ -1057,21 +1058,7 @@ pub(super) fn attach_graveyard_redirect_rider_to_prior_cast_from_zone(
             face_down_profile: None,
             enters_modified_if: None,
         },
-        SpellStackToGraveyardReplacement::Exile => Effect::ChangeZone {
-            origin: Some(Zone::Stack),
-            destination: Zone::Exile,
-            target: TargetFilter::ParentTarget,
-            owner_library: false,
-            enter_transformed: false,
-            enters_under: None,
-            enter_tapped: EtbTapState::Unspecified,
-            enters_attacking: false,
-            up_to: false,
-            enter_with_counters: vec![],
-            conditional_enter_with_counters: vec![],
-            face_down_profile: None,
-            enters_modified_if: None,
-        },
+        SpellStackToGraveyardReplacement::Exile => return false,
     };
     let Some(prev) = defs.last_mut() else {
         return false;
@@ -1082,6 +1069,29 @@ pub(super) fn attach_graveyard_redirect_rider_to_prior_cast_from_zone(
     let mut rider = AbilityDefinition::new(AbilityKind::Spell, rider_effect);
     rider.sub_link = SubAbilityLink::SequentialSibling;
     prev.sub_ability = Some(Box::new(rider));
+    true
+}
+
+/// CR 614.1a + CR 608.2g: absorb an exact "a spell cast this way" destination
+/// rider into the immediately preceding free-cast window. Unlike the legacy
+/// "that spell" form, this rider applies independently to every spell the
+/// window casts, so it belongs on `FreeCastFromZones` metadata rather than as a
+/// sequential `ParentTarget` sub-ability.
+pub(super) fn attach_graveyard_redirect_rider_to_prior_free_cast_from_zones(
+    defs: &mut [AbilityDefinition],
+    dest: SpellStackToGraveyardReplacement,
+) -> bool {
+    let Some(prev) = defs.last_mut() else {
+        return false;
+    };
+    let Effect::FreeCastFromZones {
+        graveyard_replacement,
+        ..
+    } = &mut *prev.effect
+    else {
+        return false;
+    };
+    *graveyard_replacement = Some(dest);
     true
 }
 

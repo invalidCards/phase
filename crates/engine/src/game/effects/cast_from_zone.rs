@@ -607,27 +607,13 @@ pub fn resolve(
     // existing free-cast window as an exact pool: do not rescan graveyards and
     // do not substitute another card from the same opponent. The window's
     // re-offer pipeline casts selected spells one at a time without priority.
-    let is_per_opponent_fanout = matches!(
-        ability
-            .multi_target
-            .as_ref()
-            .and_then(|spec| spec.max.as_ref()),
-        Some(QuantityExpr::Ref {
-            qty: crate::types::ability::QuantityRef::PlayerCount {
-                filter: crate::types::ability::PlayerFilter::Opponent
-            }
-        })
-    );
+    let is_per_opponent_fanout = crate::game::ability_utils::is_per_opponent_target_fanout(ability);
     let graveyard_destination = cast_from_zone_graveyard_destination(ability);
     if driver.is_during_resolution()
         && without_paying
         && alt_ability_cost.is_none()
         && is_per_opponent_fanout
         && !target_ids.is_empty()
-        && matches!(
-            graveyard_destination,
-            None | Some(SpellStackToGraveyardReplacement::Exile)
-        )
     {
         let mut window = ability.clone();
         window.effect = Effect::FreeCastFromZones {
@@ -636,13 +622,13 @@ pub fn resolve(
             filter: target_filter.clone(),
             zones: vec![Zone::Graveyard],
             // The CastFromZone rider is stored as a sequential ParentTarget
-            // sub-ability; FreeCastWindow carries its Exile destination as
+            // sub-ability; FreeCastWindow carries its exact destination as
             // per-cast metadata instead of installing a source-global effect.
-            exile_instead_of_graveyard: matches!(
-                graveyard_destination,
-                Some(SpellStackToGraveyardReplacement::Exile)
-            ),
+            graveyard_replacement: graveyard_destination,
         };
+        // The rider has been translated into the window's per-cast metadata;
+        // retaining it would run a second destination move after the window.
+        window.sub_ability = None;
         window.targets = target_ids.drain(..).map(TargetRef::Object).collect();
         return super::free_cast_from_zones::resolve(state, &window, events);
     }

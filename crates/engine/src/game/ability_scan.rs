@@ -1249,7 +1249,7 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             count: _,
             max_total_mv: _,
             zones: _,
-            exile_instead_of_graveyard: _,
+            graveyard_replacement: _,
         } => {
             let mut acc = Axes::NONE;
             acc = acc.or(scan_target_filter(filter, target_ctx, mode));

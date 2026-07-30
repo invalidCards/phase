@@ -3316,8 +3316,13 @@ pub enum ResolutionCastSuccessAction {
         remaining_mv_budget: Option<u32>,
         filter: TargetFilter,
         zones: Vec<Zone>,
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        exile_instead_of_graveyard: bool,
+        #[serde(
+            default,
+            alias = "exile_instead_of_graveyard",
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_graveyard_replacement_compat"
+        )]
+        graveyard_replacement: Option<SpellStackToGraveyardReplacement>,
         /// CR 406.6: Source object of the granting ability, threaded so
         /// `ExiledBySource`-style filters (Plargg and Nassari) can rebuild the
         /// re-offer candidate set against the right exile links. Zero sentinel
@@ -3673,7 +3678,7 @@ where
 /// → `None`), so an in-flight saved / reconnected permission serialized before
 /// the migration still reloads with its exile-on-resolution rider. Paired with
 /// `#[serde(alias = "exile_instead_of_graveyard_on_resolve")]` on the field.
-fn deserialize_graveyard_replacement_compat<'de, D>(
+pub(crate) fn deserialize_graveyard_replacement_compat<'de, D>(
     d: D,
 ) -> Result<Option<SpellStackToGraveyardReplacement>, D::Error>
 where
@@ -12095,10 +12100,9 @@ pub enum Effect {
     /// cross-selection budget that shrinks as each spell is cast. "Up to N"
     /// makes every cast optional (the controller may stop early or cast none).
     ///
-    /// When `exile_instead_of_graveyard` is true, each spell cast this way
-    /// carries the rider "if those spells would be put into your graveyard,
-    /// exile them instead" (CR 614.1a) for the rest of the cast — applied as a
-    /// duration-scoped replacement on the cast spell.
+    /// When `graveyard_replacement` is `Some`, each spell cast this way carries
+    /// its CR 614.1a stack-to-graveyard destination rider for the rest of the
+    /// cast — applied as a duration-scoped replacement on the cast spell.
     ///
     /// Distinct from `CastFromZone`, which grants a casting *permission* on a
     /// targeted object (lingering or a single self-cast). This effect owns the
@@ -12118,10 +12122,15 @@ pub enum Effect {
         /// CR 601.2a: Zones searched for candidates (the controller's own
         /// graveyard and/or hand).
         zones: Vec<Zone>,
-        /// CR 614.1a: When true, spells cast this way are exiled instead of
-        /// being put into their owner's graveyard ("exile them instead").
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        exile_instead_of_graveyard: bool,
+        /// CR 614.1a: Optional destination for spells cast this way instead of
+        /// their owner's graveyard (for example, "exile them instead").
+        #[serde(
+            default,
+            alias = "exile_instead_of_graveyard",
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "deserialize_graveyard_replacement_compat"
+        )]
+        graveyard_replacement: Option<SpellStackToGraveyardReplacement>,
     },
     /// CR 614.1a + CR 608.2n + CR 607.2b: "Exile it instead of putting it into a
     /// graveyard as it resolves" — the self-replacement rider applied by a
@@ -12136,7 +12145,8 @@ pub enum Effect {
     /// can later refer to the accumulating set.
     ///
     /// Distinct from `ChangeZone { destination: Exile }` (which moves a card that
-    /// is already in a zone) and from `FreeCastFromZones { exile_instead… }`
+    /// is already in a zone) and from `FreeCastFromZones {
+    /// graveyard_replacement: Some(..) }`
     /// (which stamps the same rider on a spell *cast during resolution*, with no
     /// linked-exile payoff). This effect is the trigger-driven, link-establishing
     /// form for the resolving spell itself.

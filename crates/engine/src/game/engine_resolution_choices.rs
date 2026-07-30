@@ -1992,7 +1992,7 @@ pub(super) fn handle_resolution_choice(
                         remaining_mv_budget,
                         filter,
                         zones,
-                        exile_instead_of_graveyard,
+                        graveyard_replacement,
                         source,
                         member_pool,
                     },
@@ -2047,7 +2047,7 @@ pub(super) fn handle_resolution_choice(
                         remaining_mv_budget,
                         filter,
                         zones,
-                        exile_instead_of_graveyard,
+                        graveyard_replacement: graveyard_replacement.clone(),
                         source,
                         member_pool,
                     },
@@ -2060,6 +2060,10 @@ pub(super) fn handle_resolution_choice(
                     constraint: None,
                     cast_transformed: false,
                     cleanup,
+                    // The window's success action installs this rider exactly
+                    // once after the cast finalizes. Passing it through this
+                    // request would make `initiate_cast_during_resolution`
+                    // install a duplicate synthetic replacement.
                     graveyard_replacement: None,
                     cost: crate::types::ability::ResolutionCastCost::Free,
                 },

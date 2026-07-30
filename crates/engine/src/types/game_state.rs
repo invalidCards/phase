@@ -7219,10 +7219,15 @@ pub enum CastOfferKind {
         /// CR 601.2a: Zones searched for candidates (controller's graveyard
         /// and/or hand).
         zones: Vec<crate::types::zones::Zone>,
-        /// CR 614.1a: Whether spells cast this way are exiled instead of going
-        /// to their owner's graveyard.
-        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-        exile_instead_of_graveyard: bool,
+        /// CR 614.1a: Optional destination for spells cast this way instead of
+        /// their owner's graveyard.
+        #[serde(
+            default,
+            alias = "exile_instead_of_graveyard",
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "crate::types::ability::deserialize_graveyard_replacement_compat"
+        )]
+        graveyard_replacement: Option<crate::types::ability::SpellStackToGraveyardReplacement>,
         /// CR 406.6: Source object of the granting ability. `filter`s such as
         /// `ExiledBySource` (Plargg and Nassari's "the other cards exiled this
         /// way") resolve their exile links against this id, so the re-offer

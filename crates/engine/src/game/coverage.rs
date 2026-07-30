@@ -3076,7 +3076,7 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
             max_total_mv,
             filter,
             zones,
-            exile_instead_of_graveyard,
+            graveyard_replacement,
         } => {
             d.push(("count".into(), count.to_string()));
             if let Some(mv) = max_total_mv {
@@ -3091,8 +3091,8 @@ fn effect_details(effect: &Effect) -> Vec<(String, String)> {
                     .collect::<Vec<_>>()
                     .join("/"),
             ));
-            if *exile_instead_of_graveyard {
-                d.push(("exile instead of graveyard".into(), "yes".into()));
+            if let Some(destination) = graveyard_replacement {
+                d.push(("graveyard replacement".into(), format!("{destination:?}")));
             }
         }
         Effect::RollDie {

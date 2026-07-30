@@ -2,7 +2,7 @@
 //! during-resolution free-cast pool, with no graveyard substitution.
 
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
-use engine::types::ability::TargetRef;
+use engine::types::ability::{SpellStackToGraveyardReplacement, TargetRef};
 use engine::types::actions::GameAction;
 use engine::types::game_state::{CastOfferKind, CastPaymentMode, WaitingFor};
 use engine::types::identifiers::ObjectId;
@@ -81,6 +81,10 @@ fn diluvian_primordial_uses_selected_pairs_as_its_fixed_free_cast_pool() {
             vec![],
         )],
     );
+    // The cast spell is a cantrip. Seed P0's library so resolving it proves
+    // the full cast path deterministically rather than relying on an empty
+    // library draw-loss implementation detail.
+    let p0_draw_filler = scenario.add_card_to_library_top(P0, "P0 Draw Filler");
     let primordial = scenario
         .add_creature_to_hand_from_oracle(P0, "Diluvian Primordial", 5, 5, DILUVIAN_ORACLE)
         .with_mana_cost(ManaCost::generic(1))
@@ -126,14 +130,17 @@ fn diluvian_primordial_uses_selected_pairs_as_its_fixed_free_cast_pool() {
                     candidates,
                     remaining_casts,
                     member_pool,
-                    exile_instead_of_graveyard,
+                    graveyard_replacement,
                     ..
                 },
         } => {
             assert_eq!(member_pool, vec![p1_selected, p2_selected]);
             assert_eq!(candidates, vec![p1_selected, p2_selected]);
             assert_eq!(remaining_casts, 2);
-            assert!(exile_instead_of_graveyard);
+            assert_eq!(
+                graveyard_replacement,
+                Some(SpellStackToGraveyardReplacement::Exile)
+            );
         }
         other => panic!("expected Diluvian FreeCastWindow, got {other:?}"),
     }
@@ -165,6 +172,7 @@ fn diluvian_primordial_uses_selected_pairs_as_its_fixed_free_cast_pool() {
     runner.advance_until_stack_empty();
 
     assert_eq!(runner.state().objects[&p1_selected].zone, Zone::Exile);
+    assert_eq!(runner.state().objects[&p0_draw_filler].zone, Zone::Hand);
     assert_eq!(runner.state().objects[&p2_selected].zone, Zone::Graveyard);
     assert_eq!(runner.state().objects[&p1_extra].zone, Zone::Graveyard);
     assert_eq!(runner.state().objects[&p2_extra].zone, Zone::Graveyard);
@@ -255,6 +263,9 @@ fn diluvian_primordial_skips_targetless_opponent_and_casts_other_selected_spell(
             vec![],
         )],
     );
+    // As above, make the selected cantrip's resolution observable without an
+    // empty-library draw-loss side effect.
+    let p0_draw_filler = scenario.add_card_to_library_top(P0, "P0 Draw Filler");
     let primordial = scenario
         .add_creature_to_hand_from_oracle(P0, "Diluvian Primordial", 5, 5, DILUVIAN_ORACLE)
         .with_mana_cost(ManaCost::generic(1))
@@ -328,5 +339,6 @@ fn diluvian_primordial_skips_targetless_opponent_and_casts_other_selected_spell(
     assert_eq!(runner.state().objects[&p2_selected].zone, Zone::Stack);
     runner.advance_until_stack_empty();
     assert_eq!(runner.state().objects[&p2_selected].zone, Zone::Exile);
+    assert_eq!(runner.state().objects[&p0_draw_filler].zone, Zone::Hand);
     assert_eq!(runner.state().objects[&p2_extra].zone, Zone::Graveyard);
 }

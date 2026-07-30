@@ -22,27 +22,26 @@ use crate::types::zones::Zone;
 /// matching the Cascade/Discover/Ripple pattern. The "Exile ~" sub-ability is
 /// stashed as a `pending_continuation` and runs after the window finishes.
 ///
-/// Invoke Calamity is the type specimen. The `exile_instead_of_graveyard` rider
-/// (CR 614.1a — "if those spells would be put into your graveyard, exile them
-/// instead") is carried on the offer so each cast spell is stamped with it.
+/// Invoke Calamity is the type specimen. The optional CR 614.1a destination
+/// rider is carried on the offer so each cast spell is stamped with it.
 pub fn resolve(
     state: &mut GameState,
     ability: &ResolvedAbility,
     events: &mut Vec<GameEvent>,
 ) -> Result<(), EffectError> {
-    let (count, max_total_mv, filter, zones, exile_instead_of_graveyard) = match &ability.effect {
+    let (count, max_total_mv, filter, zones, graveyard_replacement) = match &ability.effect {
         Effect::FreeCastFromZones {
             count,
             max_total_mv,
             filter,
             zones,
-            exile_instead_of_graveyard,
+            graveyard_replacement,
         } => (
             *count,
             *max_total_mv,
             filter.clone(),
             zones.clone(),
-            *exile_instead_of_graveyard,
+            graveyard_replacement.clone(),
         ),
         _ => return Err(EffectError::MissingParam("FreeCastFromZones".to_string())),
     };
@@ -105,7 +104,7 @@ pub fn resolve(
             remaining_mv_budget: max_total_mv,
             filter,
             zones,
-            exile_instead_of_graveyard,
+            graveyard_replacement,
             source: ability.source_id,
             member_pool,
         },
@@ -266,7 +265,7 @@ fn member_pool_filter(filter: &TargetFilter) -> TargetFilter {
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::{TypeFilter, TypedFilter};
+    use crate::types::ability::{SpellStackToGraveyardReplacement, TypeFilter, TypedFilter};
     use crate::types::card_type::CoreType;
     use crate::types::identifiers::CardId;
     use crate::types::mana::ManaCost;
@@ -534,7 +533,7 @@ mod tests {
                 max_total_mv: Some(6),
                 filter: instant_sorcery_filter(),
                 zones: vec![Zone::Graveyard, Zone::Hand],
-                exile_instead_of_graveyard: true,
+                graveyard_replacement: Some(SpellStackToGraveyardReplacement::Exile),
             },
             vec![],
             source,
@@ -580,7 +579,7 @@ mod tests {
                 max_total_mv: Some(6),
                 filter: instant_sorcery_filter(),
                 zones: vec![Zone::Graveyard, Zone::Hand],
-                exile_instead_of_graveyard: true,
+                graveyard_replacement: Some(SpellStackToGraveyardReplacement::Exile),
             },
             vec![],
             source,
@@ -596,7 +595,7 @@ mod tests {
                         candidates,
                         remaining_casts,
                         remaining_mv_budget,
-                        exile_instead_of_graveyard,
+                        graveyard_replacement,
                         ..
                     },
             } => {
@@ -604,7 +603,10 @@ mod tests {
                 assert_eq!(candidates, &vec![instant]);
                 assert_eq!(*remaining_casts, 2);
                 assert_eq!(*remaining_mv_budget, Some(6));
-                assert!(*exile_instead_of_graveyard);
+                assert_eq!(
+                    graveyard_replacement.as_ref(),
+                    Some(&SpellStackToGraveyardReplacement::Exile)
+                );
             }
             other => panic!("expected FreeCastWindow, got {other:?}"),
         }

@@ -18055,10 +18055,68 @@ fn parse_spell_graveyard_replacement_rider(
     use nom::combinator::{all_consuming, value};
     use nom::Parser;
     let (_, (_, _, _, dest, _, _)) = all_consuming((
+        tag::<_, _, OracleError<'_>>("if that spell would be put into "),
         alt((
-            tag::<_, _, OracleError<'_>>("if that spell would be put into "),
-            tag("if a spell cast this way would be put into "),
+            tag("a graveyard"),
+            tag("the graveyard"),
+            tag("its owner's graveyard"),
+            tag("your graveyard"),
+            tag("an opponent's graveyard"),
         )),
+        tag(", "),
+        alt((
+            value(
+                SpellStackToGraveyardReplacement::Exile,
+                alt((
+                    tag("exile it instead"),
+                    tag("exile that card instead"),
+                    tag("exile that spell instead"),
+                )),
+            ),
+            value(
+                SpellStackToGraveyardReplacement::Library {
+                    position: LibraryPosition::Bottom,
+                },
+                tag("put it on the bottom of its owner's library instead"),
+            ),
+            value(
+                SpellStackToGraveyardReplacement::Library {
+                    position: LibraryPosition::Top,
+                },
+                tag("put it on top of its owner's library instead"),
+            ),
+            value(
+                SpellStackToGraveyardReplacement::Hand,
+                alt((
+                    tag("put it into its owner's hand instead"),
+                    tag("return it to its owner's hand instead"),
+                )),
+            ),
+        )),
+        opt(tag(".")),
+        multispace0::<_, OracleError<'_>>,
+    ))
+    .parse(lower.trim())
+    .ok()?;
+    Some(dest)
+}
+
+/// CR 614.1a + CR 608.2g: Parse the exact plural-free-cast rider, "if a spell
+/// cast this way would be put into a graveyard, [destination] instead." This
+/// route is deliberately typed and all-consuming: it must not swallow a
+/// merely similar conditional before the assembly pass verifies that the prior
+/// definition is a `FreeCastFromZones` window.
+fn parse_spells_cast_this_way_graveyard_replacement_rider(
+    lower: &str,
+) -> Option<SpellStackToGraveyardReplacement> {
+    use nom::branch::alt;
+    use nom::bytes::complete::tag;
+    use nom::character::complete::multispace0;
+    use nom::combinator::{all_consuming, opt, value};
+    use nom::Parser;
+
+    let (_, (_, _, _, dest, _, _)) = all_consuming((
+        tag::<_, _, OracleError<'_>>("if a spell cast this way would be put into "),
         alt((
             tag("a graveyard"),
             tag("the graveyard"),
@@ -21480,7 +21538,7 @@ fn try_parse_counted_free_cast_from_exiled_this_way(rest: &str) -> Option<Effect
         max_total_mv: None,
         filter,
         zones: vec![Zone::Exile],
-        exile_instead_of_graveyard: false,
+        graveyard_replacement: None,
     })
 }
 
@@ -21688,7 +21746,7 @@ fn try_parse_free_cast_from_zones(lower: &str) -> Option<Effect> {
         max_total_mv,
         filter,
         zones,
-        exile_instead_of_graveyard: false,
+        graveyard_replacement: None,
     })
 }
 
@@ -29055,11 +29113,11 @@ pub(crate) fn parse_effect_chain_ir(
                     && matches!(&clause.parsed.effect, Effect::FreeCastFromZones { .. })
             }) {
                 if let Effect::FreeCastFromZones {
-                    exile_instead_of_graveyard,
+                    graveyard_replacement,
                     ..
                 } = &mut previous.parsed.effect
                 {
-                    *exile_instead_of_graveyard = true;
+                    *graveyard_replacement = Some(SpellStackToGraveyardReplacement::Exile);
                     continue;
                 }
             }
