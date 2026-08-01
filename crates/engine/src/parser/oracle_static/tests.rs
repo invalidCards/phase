@@ -25866,7 +25866,7 @@ fn combat_tax_sphere_of_safety_defended_player_or_planeswalker() {
     }
 }
 
-/// CR 506.3 + CR 508.1d + CR 508.1h: Onakke Oathkeeper — a planeswalker-only
+/// CR 506.3 + CR 508.1b-c + CR 508.1h: Onakke Oathkeeper — a planeswalker-only
 /// combat tax must preserve both the typed `Planeswalker` scope and the
 /// per-attacker scaling from its relative clause.
 #[test]

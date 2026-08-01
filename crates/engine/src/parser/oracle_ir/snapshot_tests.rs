@@ -2487,7 +2487,7 @@ fn liliana_the_repentant() {
     insta::assert_json_snapshot!("liliana_the_repentant_lowered", &lowered);
 }
 
-/// CR 508.1d + CR 602.1: Onakke's two printed lines exercise both the
+/// CR 508.1b-c + CR 508.1h + CR 602.2: Onakke's two printed lines exercise both the
 /// planeswalker-only combat-tax static and its graveyard activation. Snapshot
 /// both document IR and lowering so neither line can silently degrade while
 /// the other stays supported.

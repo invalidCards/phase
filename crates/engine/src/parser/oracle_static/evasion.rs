@@ -2396,7 +2396,7 @@ pub(crate) fn try_parse_ignore_landwalk_for_blocking(
     )
 }
 
-/// CR 508.1d + CR 508.1h + CR 509.1c + CR 118.12a: Parse the combat-tax static family:
+/// CR 508.1b-c + CR 508.1h + CR 509.1c + CR 118.12a: Parse the combat-tax static family:
 ///
 /// - "Creatures can't attack [you | planeswalkers you control | you or planeswalkers
 ///   you control] unless their
