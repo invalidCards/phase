@@ -9674,15 +9674,63 @@ fn resolve_chain_body(
         // graveyard-redirect rider by stamping the granted casting permission. Do
         // not also execute the parser's structural rider (`ChangeZone` /
         // `PutAtLibraryPosition` targeting `ParentTarget`) as an immediate move,
-        // or the graveyard card leaves before the player can cast it. CastFromZone
-        // recognizes any redirect destination (exile / library / hand); Counter
-        // only ever carries the exile sub-ability rider (its library/hand redirect
-        // rides `countered_spell_zone`) and consumes it during `counter::resolve`
-        // (stack -> exile directly) — skip the follow-up move either way.
-        if (matches!(&ability.effect, Effect::CastFromZone { .. })
-            && cast_from_zone::graveyard_destination_rider(sub).is_some())
-            || (matches!(&ability.effect, Effect::Counter { .. })
-                && cast_from_zone::is_graveyard_exile_rider_subability(sub))
+        // or the graveyard card leaves before the player can cast it.
+        //
+        // Diluvian Primordial's canonical per-opponent fanout translates that
+        // CastFromZone into a FreeCastWindow. Consume its *direct* redirect
+        // rider rather than resolving it as an instruction: when a window opens,
+        // park the rider's direct SequentialSibling tail until that window
+        // closes; when none opens, resolve that tail immediately. This keeps an
+        // uncast selected card in its graveyard while preserving a later printed
+        // instruction such as "Then draw a card."
+        // Other CastFromZone shapes keep the established metadata-only rider
+        // handling. Counter only ever carries the exile sub-ability rider (its
+        // library/hand redirect rides `countered_spell_zone`) and consumes it
+        // during `counter::resolve` (stack -> exile directly).
+        let direct_cast_from_zone_graveyard_rider =
+            matches!(&ability.effect, Effect::CastFromZone { .. })
+                && cast_from_zone::graveyard_destination_rider(sub).is_some();
+        if direct_cast_from_zone_graveyard_rider {
+            let is_per_opponent_fanout =
+                crate::game::ability_utils::is_per_opponent_target_fanout(ability);
+            if is_per_opponent_fanout {
+                let mut direct_sequential_tail = sub
+                    .sub_ability
+                    .as_deref()
+                    .filter(|tail| tail.sub_link == SubAbilityLink::SequentialSibling)
+                    .cloned();
+                if let Some(tail) = direct_sequential_tail.as_mut() {
+                    if should_propagate_parent_targets(ability, tail) {
+                        tail.targets = ability.targets.clone();
+                    }
+                    apply_parent_chain_context(
+                        tail,
+                        ability,
+                        effect_context_object.as_ref(),
+                        state,
+                    );
+                }
+                if matches!(
+                    state.waiting_for,
+                    WaitingFor::CastOffer {
+                        kind: CastOfferKind::FreeCastWindow { .. },
+                        ..
+                    }
+                ) {
+                    if let Some(tail) = direct_sequential_tail {
+                        prepend_to_pending_continuation(state, tail);
+                    }
+                } else if let Some(tail) = direct_sequential_tail {
+                    resolve_ability_chain(state, &tail, events, depth + 1)?;
+                }
+                return Ok(());
+            }
+            // Generic CastFromZone riders remain metadata consumed by the
+            // granting effect. Only the canonical fanout needs tail handling.
+            return Ok(());
+        }
+        if matches!(&ability.effect, Effect::Counter { .. })
+            && cast_from_zone::is_graveyard_exile_rider_subability(sub)
         {
             return Ok(());
         }
