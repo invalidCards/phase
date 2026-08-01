@@ -784,6 +784,7 @@ mod old_growth_troll_return_as_aura;
 mod omniscience_free_cast_chalice_x;
 mod omniscience_free_cast_vexing_bauble;
 mod omo_queen_of_vesuva;
+mod onakke_oathkeeper;
 mod oracle_parser;
 mod orzhov_advokist;
 mod overload_no_legal_target;
