@@ -515,7 +515,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - Olog-hai Crusher
 - Omega, Heartless Evolution
 - On Wings of Gold
-- Onakke Oathkeeper
 - Only the Best
 - Oracle of Tragedy
 - Orcish Veteran
