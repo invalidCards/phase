@@ -35014,7 +35014,7 @@ fn attached_conditional_grant_state_backed_gate_still_passes_through() {
     );
 }
 
-/// Havi's static condition is a live, owner-scoped historic-card graveyard
+/// Havi's static condition is a live, controller-scoped historic-card graveyard
 /// count. The historic adjective remains on the typed zone filter.
 #[test]
 fn havi_historic_graveyard_gate_parses_with_reminder_text() {
