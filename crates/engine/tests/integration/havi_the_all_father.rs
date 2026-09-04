@@ -153,12 +153,22 @@ fn havi_historic_graveyard_gate_follows_debug_controller_changes() {
         "P1 has no historic graveyard cards yet"
     );
 
-    for object in p1_historic {
+    for &object in &p1_historic {
         move_to_graveyard(&mut runner, object);
     }
     assert!(
         has_indestructible_after_layers(&mut runner, havi),
         "P1's historic graveyard becomes authoritative after control changes"
+    );
+    move_to_zone(
+        runner.state_mut(),
+        p1_historic[0],
+        Zone::Exile,
+        &mut Vec::new(),
+    );
+    assert!(
+        !has_indestructible_after_layers(&mut runner, havi),
+        "moving one P1 historic card out drops Havi below P1's threshold"
     );
     apply(
         runner.state_mut(),
