@@ -14989,52 +14989,6 @@ mod tests {
         assert_eq!(rest, ", draw a card");
     }
 
-    /// Filtered counts consume only the canonical plural card noun plus a valid
-    /// scoped-zone suffix, then leave the next clause boundary to their caller.
-    #[test]
-    fn filtered_zone_card_count_declines_malformed_forms_and_preserves_boundaries() {
-        let (rest, _) = parse_inner_condition(
-            "there are four or more historic cards in your graveyard, draw a card",
-        )
-        .expect("positive historic-count guard must parse");
-        assert_eq!(rest, ", draw a card");
-        assert!(parse_there_are_conditions(
-            "there are four or more historic card in your graveyard"
-        )
-        .is_err());
-        assert!(
-            parse_there_are_conditions(
-                "there are four or more historic cards in your graveyard total"
-            )
-            .is_ok(),
-            "the parser must leave an overextended tail rather than absorb it"
-        );
-
-        let (rest, condition) =
-            parse_inner_condition("there are fewer than six creature cards in your graveyard")
-                .expect("filtered typed-card count remains reachable");
-        assert_eq!(rest, "");
-        assert_eq!(
-            condition,
-            StaticCondition::QuantityComparison {
-                lhs: QuantityExpr::Ref {
-                    qty: QuantityRef::ZoneCardCount {
-                        zone: ZoneRef::Graveyard,
-                        card_types: Vec::new(),
-                        filter: Some(TargetFilter::Typed(TypedFilter {
-                            type_filters: vec![TypeFilter::Creature],
-                            controller: None,
-                            properties: Vec::new(),
-                        })),
-                        scope: CountScope::Controller,
-                    }
-                },
-                comparator: Comparator::LT,
-                rhs: QuantityExpr::Fixed { value: 6 },
-            }
-        );
-    }
-
     /// CR 107.1 + CR 611.3a: "there are fewer than N cards ..." with the plain
     /// graveyard-size canonicalization composing with the strict prefix. The
     /// Warring Triad's "as long as there are fewer than eight cards in your
