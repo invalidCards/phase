@@ -112,6 +112,38 @@ fn nested_triggering_batch_aggregate_is_rebound_through_the_source_visitor() {
     assert_eq!((batch, chain, objects, graveyard, leaves), (0, 1, 1, 1, 3));
 }
 
+/// Dawnbreak Reclaimer's entire sequential instruction must lower as one
+/// reciprocal chain: the owner of the first selected creature supplies the
+/// second choice, and only those two selections reach the optional return.
+#[test]
+fn dawnbreak_reclaimer_lowers_to_a_reciprocal_graveyard_choice_chain() {
+    let def = parse_effect_chain(
+        "Choose a creature card in an opponent's graveyard, then that player chooses a creature card in your graveyard. You may return those cards to the battlefield under their owners' control.",
+        AbilityKind::Spell,
+    );
+    let Effect::ChooseFromZone {
+        zone: Zone::Graveyard,
+        chooser: ZoneChoiceChooser::Controller,
+        candidate_source: ZoneChoiceCandidateSource::Direct,
+        reciprocal_role: Some(ReciprocalZoneChoiceRole::Produce),
+        ..
+    } = def.effect.as_ref()
+    else {
+        panic!("expected reciprocal producer, got {:?}", def.effect);
+    };
+    let consume = def.sub_ability.expect("reciprocal consumer");
+    let Effect::ChooseFromZone {
+        chooser: ZoneChoiceChooser::ImmediatePriorSelectedCardOwner { player: None },
+        candidate_source: ZoneChoiceCandidateSource::Direct,
+        reciprocal_role: Some(ReciprocalZoneChoiceRole::Consume),
+        ..
+    } = consume.effect.as_ref()
+    else {
+        panic!("expected reciprocal consumer, got {:?}", consume.effect);
+    };
+    assert!(consume.sub_ability.expect("optional return").optional);
+}
+
 #[test]
 fn nested_triggering_batch_in_non_trigger_chain_is_demoted_honestly() {
     let mut def = AbilityDefinition::new(
@@ -12990,7 +13022,9 @@ fn kozilek_target_players_each_manifest_two_from_their_hands_parses() {
                 count: 2,
                 zone: Zone::Hand,
                 zone_owner: ZoneOwner::Each(PerPlayerScope::TargetedPlayers),
-                chooser: Chooser::OwningPlayer,
+                chooser: Chooser::OwningPlayer.into(),
+                candidate_source: crate::types::ability::ZoneChoiceCandidateSource::Legacy,
+                reciprocal_role: None,
                 up_to: false,
                 // CR 608.2d: each player CHOOSES — a regression to a random
                 // or non-choice selection mode must fail here.
@@ -26113,7 +26147,9 @@ fn parse_impulse_draw_chain() {
             Effect::ChooseFromZone {
                 count: 1,
                 zone: crate::types::zones::Zone::Exile,
-                chooser: crate::types::ability::Chooser::Controller,
+                chooser: crate::types::ability::Chooser::Controller.into(),
+                candidate_source: crate::types::ability::ZoneChoiceCandidateSource::Legacy,
+                reciprocal_role: None,
                 up_to: false,
                 constraint: None,
                 ..

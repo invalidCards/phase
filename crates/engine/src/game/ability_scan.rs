@@ -1533,6 +1533,7 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
             up_to: _,
             selection: _,
             constraint: _,
+            ..
         } => {
             let mut acc = Axes::NONE;
             if let Some(x) = filter {

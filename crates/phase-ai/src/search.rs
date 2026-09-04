@@ -13394,6 +13394,7 @@ mod tests {
             up_to: true,
             constraint: None,
             source_id: source,
+            reciprocal_role: None,
         };
 
         assert_eq!(

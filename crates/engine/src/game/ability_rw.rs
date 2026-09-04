@@ -5100,6 +5100,7 @@ fn rw_effect(
             up_to: _,
             selection: _,
             constraint: _,
+            ..
         } => {
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::HandLibrary);

@@ -84,6 +84,7 @@ use super::oracle_nom::condition::parse_reflexive_conditional_connector;
 use super::oracle_nom::error::OracleResult;
 use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_nom::quantity as nom_quantity;
+use super::oracle_nom::target as nom_target;
 use super::oracle_quantity::{
     parse_event_context_quantity, parse_for_each_clause, parse_for_each_clause_expr_with_context,
     parse_for_each_object_filter_clause_with_context,
@@ -114,13 +115,14 @@ use crate::types::ability::{
     NumberDistinctness, ObjectProperty, ObjectScope, OriginConstraint, PerPlayerScope,
     PerpetualModification, PlayPermissionInvalidation, PlayerChoiceDistinctness, PlayerFilter,
     PlayerRelation, PlayerScope, PreventionAmount, PreventionScope, ProhibitedActivity,
-    PropertyAggregate, PtValue, QuantityExpr, QuantityRef, ReplacementCondition,
-    ReplacementDefinition, ResolutionCastWindow, RestrictionExpiry, RestrictionPlayerScope,
-    RevealUntilDisposition, RoundingMode, SharedQuality, SharedQualityRelation, SiblingCondition,
-    SkipScope, SpellStackToGraveyardReplacement, StaticCondition, StaticDefinition, StepSkipTarget,
-    SubAbilityLink, TapStateChange, TargetFilter, TargetSelectionMode, ThisWayCause,
-    TrackedAnaphorSource, TriggerCondition, TriggerDefinition, TurnGate, TypeFilter, TypedFilter,
-    UnlessPayModifier, UntilCondition, WheneverEventExpiry, ZoneOwner,
+    PropertyAggregate, PtValue, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole,
+    ReplacementCondition, ReplacementDefinition, ResolutionCastWindow, RestrictionExpiry,
+    RestrictionPlayerScope, RevealUntilDisposition, RoundingMode, SharedQuality,
+    SharedQualityRelation, SiblingCondition, SkipScope, SpellStackToGraveyardReplacement,
+    StaticCondition, StaticDefinition, StepSkipTarget, SubAbilityLink, TapStateChange,
+    TargetFilter, TargetSelectionMode, ThisWayCause, TrackedAnaphorSource, TriggerCondition,
+    TriggerDefinition, TurnGate, TypeFilter, TypedFilter, UnlessPayModifier, UntilCondition,
+    WheneverEventExpiry, ZoneChoiceCandidateSource, ZoneChoiceChooser, ZoneOwner,
 };
 #[cfg(test)]
 use crate::types::ability::{AttackScope, AttackSubject};
@@ -7412,7 +7414,9 @@ fn try_parse_distinct_card_types_from_revealed(tp: TextPair<'_>) -> Option<Parse
             additional_zones: Vec::new(),
             zone_owner: crate::types::ability::ZoneOwner::Controller,
             filter: None,
-            chooser: crate::types::ability::Chooser::Controller,
+            chooser: crate::types::ability::Chooser::Controller.into(),
+            candidate_source: crate::types::ability::ZoneChoiceCandidateSource::Legacy,
+            reciprocal_role: None,
             up_to: true,
             selection: crate::types::ability::CardSelectionMode::Chosen,
             constraint: Some(ChooseFromZoneConstraint::DistinctCardTypes { categories }),
@@ -17166,7 +17170,9 @@ fn try_parse_return_opponent_choice_from_graveyard(text: &str) -> Option<ParsedE
         additional_zones: Vec::new(),
         zone_owner: ZoneOwner::Controller,
         filter: Some(filter),
-        chooser: Chooser::Opponent,
+        chooser: Chooser::Opponent.into(),
+        candidate_source: crate::types::ability::ZoneChoiceCandidateSource::Legacy,
+        reciprocal_role: None,
         up_to: false,
         selection: crate::types::ability::CardSelectionMode::Chosen,
         constraint: None,
@@ -22161,7 +22167,10 @@ fn lower_subject_predicate_ast(
                                     PerPlayerScope::TargetedPlayers,
                                 ),
                                 filter: None,
-                                chooser: crate::types::ability::Chooser::OwningPlayer,
+                                chooser: crate::types::ability::Chooser::OwningPlayer.into(),
+                                candidate_source:
+                                    crate::types::ability::ZoneChoiceCandidateSource::Legacy,
+                                reciprocal_role: None,
                                 up_to: false,
                                 selection: crate::types::ability::CardSelectionMode::Chosen,
                                 constraint: None,
@@ -22284,7 +22293,7 @@ fn lower_subject_predicate_ast(
                                 && tf.properties.is_empty()
                     )
                 {
-                    *chooser = crate::types::ability::Chooser::Opponent;
+                    *chooser = crate::types::ability::Chooser::Opponent.into();
                     return clause;
                 }
             }
@@ -32330,11 +32339,138 @@ fn unimplemented_clause(
     .push();
 }
 
+/// Parse the reciprocal sequential-graveyard choice class before ordinary
+/// sentence splitting. A recognized opener owns the entire instruction, so a
+/// malformed tail remains one strict unsupported clause rather than a partial
+/// choice chain.
+fn parse_reciprocal_card_descriptor(input: &str) -> OracleResult<'_, TargetFilter> {
+    let (input, _) = opt(alt((tag("a "), tag("an ")))).parse(input)?;
+    let (input, filter) = nom_target::parse_type_phrase(input)?;
+    let (input, _) = tag(" card").parse(input)?;
+    Ok((input, filter))
+}
+
+fn parse_reciprocal_graveyard_choice_ir(text: &str, kind: AbilityKind) -> Option<EffectChainIr> {
+    type E<'a> = OracleError<'a>;
+    let lower = text.to_ascii_lowercase();
+    let parsed = nom_on_lower(text, &lower, |input| {
+        all_consuming(terminated(
+            (
+                tag::<_, _, E<'_>>("choose "),
+                parse_reciprocal_card_descriptor,
+                tag(" in an opponent's graveyard, then that player chooses "),
+                parse_reciprocal_card_descriptor,
+                tag(" in your graveyard. you may return those cards to the battlefield under their owners' control"),
+            ),
+            pair(opt(tag(".")), eof),
+        ))
+        .parse(input)
+        .map(|(rest, (_, first, _, second, _))| (rest, (first, second)))
+    })?;
+    let ((first, second), _) = parsed;
+    let first = add_filter_props(
+        first,
+        &[
+            FilterProp::InZone {
+                zone: Zone::Graveyard,
+            },
+            FilterProp::Owned {
+                controller: ControllerRef::Opponent,
+            },
+        ],
+    );
+    let second = add_filter_props(
+        second,
+        &[
+            FilterProp::InZone {
+                zone: Zone::Graveyard,
+            },
+            FilterProp::Owned {
+                controller: ControllerRef::You,
+            },
+        ],
+    );
+    let mut consume = AbilityDefinition::new(
+        kind,
+        Effect::ChooseFromZone {
+            count: 1,
+            zone: Zone::Graveyard,
+            additional_zones: Vec::new(),
+            zone_owner: ZoneOwner::Controller,
+            filter: Some(second),
+            chooser: ZoneChoiceChooser::ImmediatePriorSelectedCardOwner { player: None },
+            candidate_source: ZoneChoiceCandidateSource::Direct,
+            reciprocal_role: Some(ReciprocalZoneChoiceRole::Consume),
+            up_to: false,
+            selection: crate::types::ability::CardSelectionMode::Chosen,
+            constraint: None,
+        },
+    );
+    let mut tail = AbilityDefinition::new(
+        kind,
+        Effect::ChangeZoneAll {
+            origin: Some(Zone::Graveyard),
+            destination: Zone::Battlefield,
+            target: TargetFilter::TrackedSet {
+                id: TrackedSetId(0),
+            },
+            enters_under: None,
+            enter_tapped: crate::types::zones::EtbTapState::Unspecified,
+            enters_attacking: false,
+            enter_with_counters: Vec::new(),
+            face_down_profile: None,
+            library_position: None,
+            random_order: false,
+        },
+    );
+    tail.optional = true;
+    consume.sub_ability = Some(Box::new(tail));
+    let mut produce = parsed_clause(Effect::ChooseFromZone {
+        count: 1,
+        zone: Zone::Graveyard,
+        additional_zones: Vec::new(),
+        zone_owner: ZoneOwner::AllOwners,
+        filter: Some(first),
+        chooser: ZoneChoiceChooser::Controller,
+        candidate_source: ZoneChoiceCandidateSource::Direct,
+        reciprocal_role: Some(ReciprocalZoneChoiceRole::Produce),
+        up_to: false,
+        selection: crate::types::ability::CardSelectionMode::Chosen,
+        constraint: None,
+    });
+    produce.sub_ability = Some(Box::new(consume));
+    let mut builder = ClauseIrBuilder::new(text);
+    builder
+        .clause(
+            text,
+            produce,
+            Some(ClauseBoundary::Sentence),
+            ClauseDisposition::Emit {
+                followup: None,
+                intrinsic: None,
+            },
+        )
+        .push();
+    Some(EffectChainIr {
+        clauses: builder.finish(),
+        kind,
+        continuation_kind: None,
+        player_scope_rewrite: PlayerScopeRewrite::Apply,
+        chain_rounding: None,
+        actor: None,
+        in_trigger: false,
+        repeat_until: None,
+    })
+}
+
 pub(crate) fn parse_effect_chain_ir(
     text: &str,
     kind: AbilityKind,
     ctx: &mut ParseContext,
 ) -> EffectChainIr {
+    if let Some(ir) = parse_reciprocal_graveyard_choice_ir(text, kind) {
+        return ir;
+    }
     if let Some(ir) = parse_choose_survivors_destroy_rest_ir(text, kind, ctx) {
         return ir;
     }
@@ -35667,7 +35803,9 @@ pub(crate) fn parse_effect_chain_ir(
                             additional_zones: Vec::new(),
                             zone_owner: crate::types::ability::ZoneOwner::Controller,
                             filter: None,
-                            chooser: *chooser,
+                            chooser: (*chooser).into(),
+                            candidate_source: ZoneChoiceCandidateSource::Legacy,
+                            reciprocal_role: None,
                             up_to: false,
                             selection: crate::types::ability::CardSelectionMode::Chosen,
                             constraint: None,
@@ -35724,7 +35862,9 @@ pub(crate) fn parse_effect_chain_ir(
                             additional_zones: Vec::new(),
                             zone_owner: crate::types::ability::ZoneOwner::Controller,
                             filter: None,
-                            chooser: *chooser,
+                            chooser: (*chooser).into(),
+                            candidate_source: ZoneChoiceCandidateSource::Legacy,
+                            reciprocal_role: None,
                             up_to: false,
                             selection: crate::types::ability::CardSelectionMode::Chosen,
                             constraint: None,
