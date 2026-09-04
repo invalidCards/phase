@@ -3,8 +3,8 @@
 Consolidated from 50 per-batch clustering passes over the whole card database. Synonymous per-batch clusters were merged into canonical root causes, their card lists unioned and deduped, and ranked by total card appearances (largest first).
 
 - **Canonical root causes:** 30
-- **Distinct cards implicated:** 4710
-- **Total card appearances across root causes:** 4743 (a card may appear under more than one root cause when it exhibits multiple distinct misparses)
+- **Distinct cards implicated:** 4709
+- **Total card appearances across root causes:** 4742 (a card may appear under more than one root cause when it exhibits multiple distinct misparses)
 
 This is the prioritized "fix N root causes → unlock M cards" backlog: the top handful of root causes account for the majority of broken cards.
 
@@ -32,7 +32,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 | 18 | Subtype / type-change modification malformed or dropped | 79 | oracle_util.rs SUBTYPES + parse_enchanted_is_type — register subtypes and emit full type-change set |
 | 19 | Perpetual (Alchemy) duration mis-mapped to UntilEndOfTurn | 67 | oracle_nom/duration.rs — add Perpetual duration combinator branch |
 | 20 | Damage subject/recipient set incomplete | 70 | Effect::DealDamage handling — capture all damage subjects/recipients per CR 120 |
-| 21 | Token entry flags / keyword / attachment clause dropped | 52 | oracle parser token-description handling — preserve attacking/tapped flags, keyword grants, attach target |
+| 21 | Token entry flags / keyword / attachment clause dropped | 51 | oracle parser token-description handling — preserve attacking/tapped flags, keyword grants, attach target |
 | 22 | Attacks-alone / while-saddled combat constraint dropped | 43 | oracle_trigger.rs scan_for_phase / attacks-trigger constraint parsing; add SourceAttackingAlone/MinCoAttackers (attacks-alone remainder); "while saddled" folds into the attack trigger's valid_card at declaration (And { filters: [subject, Typed([IsSaddled])] }, CR 508.1m) — no stored TriggerCondition, no LKI (done) |
 | 23 | Effect modeled with structurally wrong variant / ability class | 50 | add-engine-effect: select the correct Effect/ability variant for the clause class |
 | 24 | Variable X / where-X count unbound (sentinel or unresolved Variable) | 37 | oracle_cost.rs / oracle_quantity.rs — allow QuantityExpr in count fields and bind trailing 'where X is' clauses |
@@ -4699,7 +4699,7 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 
 </details>
 
-### 21. Token entry flags / keyword / attachment clause dropped  (52 cards)
+### 21. Token entry flags / keyword / attachment clause dropped  (51 cards)
 
 **Signature.** Token creation drops tapped/enters_attacking flags, a 'with <keyword>' grant, color/name, or an attach-to-target clause (terminator misses a trailing relative phrase).
 
@@ -4753,7 +4753,6 @@ This is the prioritized "fix N root causes → unlock M cards" backlog: the top 
 - The Coming of Galactus
 - The Invincible Iron Man
 - The Neutrinos
-- The Sentry, Golden Guardian
 - Underworld Fires
 - Vortex Elemental
 - Wasitora, Nekoru Queen
