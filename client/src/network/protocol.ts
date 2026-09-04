@@ -10,7 +10,12 @@ import type {
   ObjectAction,
   ActionRejection,
 } from "../adapter/types";
-import type { InteractionSubmission, ViewerInteraction } from "../adapter/generated/interaction";
+import type {
+  InteractionPreview,
+  InteractionPreviewRequest,
+  InteractionSubmission,
+  ViewerInteraction,
+} from "../adapter/generated/interaction";
 import type { SeatMutation, SeatView } from "../multiplayer/seatTypes";
 import type { P2PAuthorityStamp, P2PSessionKey } from "../services/p2pSession";
 import type { P2PTerminalResult } from "../services/p2pTerminalResult";
@@ -96,6 +101,29 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  * seat or adopts reconnect state.
  *
  * Bumps to date:
+ *  44 — DerivedViews.back_face_spell_costs publishes, for each card the viewer
+ *       may cast whose player chooses a spell face at cast time (a split card
+ *       such as a Room, a spell//spell MDFC — CR 709.3 + CR 712.11b), the live
+ *       cost of the OTHER face; spellCosts reports the live face only. The
+ *       cost badge renders both faces from this map. Additive behind a serde
+ *       default, but this client renders the map directly; a v43 host would
+ *       silently show a Room's single-face badge again, on top of the second
+ *       half's printed cost. Since game_setup and reconnect_ack carry
+ *       GameState, first contact rejects the version skew. Bumped in lockstep
+ *       with PROTOCOL_VERSION 60.
+ *  43 — LegalActionsWire.viewerInteraction's shortcut preview changed from a
+ *       single optional InteractionShortcutPreview to an
+ *       Array<InteractionShortcutPreview>, one element per offerable count,
+ *       each element also carrying an allocation list for the declaration's
+ *       shape over that count. Both peers on this track are browsers, so
+ *       neither validates the shape: a v42 guest paired with a v43 host would
+ *       read a list where its type says object and render the offer wrong, with
+ *       no decode error anywhere. First-contact version equality is the only
+ *       place the skew is refusable, and no shim ships. Bumped in lockstep with
+ *       PROTOCOL_VERSION 59 in crates/lobby-broker/src/protocol.rs, which the
+ *       same retype breaks in the declared Rust types — but no production Rust
+ *       code deserializes ServerMessage, so that track fails silently at the
+ *       browser too, and the handshake is the only refusal point on both.
  *  42 — New guest → host `state_ack` frame, carrying the highest state
  *       revision the guest has actually APPLIED — the fact a host ledger that
  *       records TRANSMISSION cannot observe, since a send resolving true only
@@ -276,7 +304,18 @@ export function legalActionsFromWire(wire: LegalActionsWire): LegalActionsResult
  *       sub-phase on WaitingFor::MulliganDecision; the MulliganBottomCards
  *       variant was removed
  */
-export const WIRE_PROTOCOL_VERSION = 42 as const;
+/**
+ * Exactly one answer per `preview_interaction` request. `failed` is the
+ * host-lifecycle channel — every engine-level refusal already rides inside
+ * `InteractionPreview.status`, so this union has two arms rather than the mana
+ * lane's three. A nested union rather than a third top-level type keeps
+ * `VALID_TYPES` at exactly the two entries the round-trip row asserts.
+ */
+export type P2PInteractionPreviewAnswer =
+  | { type: "preview"; preview: InteractionPreview }
+  | { type: "failed"; message: string };
+
+export const WIRE_PROTOCOL_VERSION = 44 as const;
 
 export type P2PMessage = P2PAuthorityWire & (
   | {
@@ -299,6 +338,11 @@ export type P2PMessage = P2PAuthorityWire & (
   | { type: "action"; senderPlayerId: number; action: GameAction }
   | { type: "interaction"; senderPlayerId: number; submission: InteractionSubmission }
   | { type: "preview_mana_payment"; requestId: number; action: GameAction }
+  /** Carries the request VERBATIM. No `senderPlayerId`: the host reads the
+   *  seat from the authenticated connection, exactly as `preview_mana_payment`
+   *  does, so there is no mismatch branch that could leave a live channel
+   *  without an answer. */
+  | { type: "preview_interaction"; request: InteractionPreviewRequest }
   | ({
       type: "state_update";
       revision?: number;
@@ -318,6 +362,7 @@ export type P2PMessage = P2PAuthorityWire & (
   | { type: "mana_payment_preview"; requestId: number; sourceIds: ObjectId[] }
   | { type: "mana_payment_preview_rejected"; requestId: number; rejection: ActionRejection }
   | { type: "mana_payment_preview_failed"; requestId: number; message: string }
+  | { type: "interaction_preview"; requestId: string; answer: P2PInteractionPreviewAnswer }
   | { type: "ping"; timestamp: number }
   | { type: "pong"; timestamp: number }
   | { type: "disconnect"; reason: string }
@@ -389,6 +434,7 @@ const VALID_TYPES = new Set([
   "action",
   "interaction",
   "preview_mana_payment",
+  "preview_interaction",
   "state_update",
   "state_ack",
   "action_rejected",
@@ -397,6 +443,7 @@ const VALID_TYPES = new Set([
   "mana_payment_preview",
   "mana_payment_preview_rejected",
   "mana_payment_preview_failed",
+  "interaction_preview",
   "ping",
   "pong",
   "disconnect",

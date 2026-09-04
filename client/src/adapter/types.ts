@@ -1,6 +1,8 @@
 import type { BracketDeckRequest, BracketEstimate } from "../types/bracketEstimate";
 import type {
   InteractionActionId,
+  InteractionPreview,
+  InteractionPreviewRequest,
   InteractionSubmission,
   ViewerInteraction,
 } from "./generated/interaction";
@@ -3452,6 +3454,13 @@ export interface DerivedViews {
    *  own hand (incl. granted). Keyed by hand ObjectId (string). Mirrors
    *  engine::game::derived_views::DerivedViews::web_slinging_costs. */
   web_slinging_costs?: Record<string, ManaCost>;
+  /** CR 709.3 + CR 712.11b: for each card the viewing player may cast whose
+   *  player chooses a spell face at cast time (a split card such as a Room, a
+   *  spell//spell MDFC), the live cost of the OTHER face — `spellCosts` reports
+   *  the live face only. Keyed by ObjectId (string). Presence is the engine's
+   *  statement that the card has two payable spell faces. Mirrors
+   *  `engine::game::derived_views::DerivedViews::back_face_spell_costs`. */
+  back_face_spell_costs?: Record<string, ManaCost>;
   /**
    * CR 709.5b + CR 709.5e + CR 707.2: both halves of each battlefield Room, in
    * printed order, resolved by the engine — a permanent that is a COPY of a
@@ -3530,6 +3539,12 @@ export interface DerivedViews {
    * Mirrors `engine::game::derived_views::DerivedViews::unbounded_pile`.
    */
   unbounded_pile?: ObjectId[];
+  /**
+   * CR 732.2a: the open loop-shortcut window's repetition ceiling. Absent when no window is
+   * open, or when the engine never narrowed the bound. Render it; never re-derive it.
+   * Mirrors `engine::game::derived_views::DerivedViews::bounded_loop_max_repetitions`.
+   */
+  bounded_loop_max_repetitions?: number;
   /**
    * CR 122.1 + CR 732.2a: the COMPLETE per-object counter-display projection, keyed by
    * ObjectId-as-string — every counter row every display surface renders, for every
@@ -4408,6 +4423,14 @@ export interface EngineAdapter {
    * offered by the engine. Unsupported transports omit this capability.
    */
   previewManaPayment?(action: GameAction, actor: PlayerId): Promise<ObjectId[]>;
+  /**
+   * Read-only preview of an interaction response the engine has not committed.
+   * Unsupported transports omit this capability.
+   */
+  previewInteraction?(
+    request: InteractionPreviewRequest,
+    actor: PlayerId,
+  ): Promise<InteractionPreview>;
   getState(): Promise<GameState>;
   getLegalActions(): Promise<LegalActionsResult>;
   /**
