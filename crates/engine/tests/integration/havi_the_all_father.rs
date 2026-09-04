@@ -67,6 +67,12 @@ fn havi_historic_graveyard_gate_tracks_zone_membership_and_historic_axes() {
         !has_indestructible_after_layers(&mut runner, havi),
         "three historic cards are below Havi's threshold"
     );
+    move_to_graveyard(&mut runner, p0_nonhistoric);
+    move_to_graveyard(&mut runner, p1_historic);
+    assert!(
+        !has_indestructible_after_layers(&mut runner, havi),
+        "P0 nonhistoric and P1 historic cards must not satisfy Havi's graveyard threshold"
+    );
 
     move_to_graveyard(&mut runner, fourth);
     assert!(
@@ -85,11 +91,9 @@ fn havi_historic_graveyard_gate_tracks_zone_membership_and_historic_axes() {
         "restoring the fourth historic card restores the live condition"
     );
 
-    move_to_graveyard(&mut runner, p0_nonhistoric);
-    move_to_graveyard(&mut runner, p1_historic);
     assert!(
         has_indestructible_after_layers(&mut runner, havi),
-        "P0 nonhistoric and P1 historic cards must not alter Havi's count"
+        "P0 nonhistoric and P1 historic cards remain excluded after Havi reaches four cards"
     );
 }
 
