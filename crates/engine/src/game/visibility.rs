@@ -5285,7 +5285,7 @@ mod tests {
             up_to: false,
             constraint: None,
             source_id: ObjectId(99),
-            reciprocal_role,
+            reciprocal_role: None,
         };
 
         let filtered = filter_state_for_viewer(&state, PlayerId(2));

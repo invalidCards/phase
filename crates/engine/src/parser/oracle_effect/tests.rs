@@ -13022,8 +13022,8 @@ fn kozilek_target_players_each_manifest_two_from_their_hands_parses() {
                 count: 2,
                 zone: Zone::Hand,
                 zone_owner: ZoneOwner::Each(PerPlayerScope::TargetedPlayers),
-                chooser: Chooser::OwningPlayer.into(),
-                candidate_source: crate::types::ability::ZoneChoiceCandidateSource::Legacy,
+                chooser: ZoneChoiceChooser::OwningPlayer,
+                candidate_source: ZoneChoiceCandidateSource::Legacy,
                 reciprocal_role: None,
                 up_to: false,
                 // CR 608.2d: each player CHOOSES — a regression to a random
@@ -26090,7 +26090,7 @@ fn return_opponents_choice_from_your_graveyard_uses_zone_choice_chain() {
     assert_eq!(*count, 1);
     assert_eq!(*zone, Zone::Graveyard);
     assert_eq!(*zone_owner, ZoneOwner::Controller);
-    assert_eq!(*chooser, Chooser::Opponent);
+    assert_eq!(*chooser, ZoneChoiceChooser::Opponent);
     assert!(!up_to);
     let TargetFilter::Typed(typed) = filter else {
         panic!("expected typed graveyard-card filter, got {filter:?}");
@@ -26147,8 +26147,8 @@ fn parse_impulse_draw_chain() {
             Effect::ChooseFromZone {
                 count: 1,
                 zone: crate::types::zones::Zone::Exile,
-                chooser: crate::types::ability::Chooser::Controller.into(),
-                candidate_source: crate::types::ability::ZoneChoiceCandidateSource::Legacy,
+                chooser: ZoneChoiceChooser::Controller,
+                candidate_source: ZoneChoiceCandidateSource::Legacy,
                 reciprocal_role: None,
                 up_to: false,
                 constraint: None,
@@ -46036,7 +46036,7 @@ fn plargg_and_nassari_full_trigger_chain_choose_then_cast_others() {
     );
     assert_eq!(
         *chooser,
-        Chooser::Opponent,
+        ZoneChoiceChooser::Opponent,
         "CR 608.2d: the \"an opponent\" subject must rebind the chooser"
     );
     let Some(TargetFilter::And { ref filters }) = *filter else {
@@ -46130,7 +46130,7 @@ fn search_for_survivors_opponent_chooses_at_random_in_your_graveyard() {
     );
     assert_eq!(
         *chooser,
-        Chooser::Opponent,
+        ZoneChoiceChooser::Opponent,
         "CR 608.2d: the untargeted \"an opponent\" subject must rebind the chooser"
     );
     assert_eq!(

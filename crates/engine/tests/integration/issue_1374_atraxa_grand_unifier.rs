@@ -22,7 +22,7 @@ use engine::game::zones::create_object;
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{
     CardSelectionMode, ChooseFromZoneConstraint, Chooser, Effect, ResolvedAbility, TargetFilter,
-    ZoneOwner,
+    ZoneChoiceCandidateSource, ZoneOwner,
 };
 use engine::types::card_type::CoreType;
 use engine::types::game_state::{GameState, WaitingFor};
@@ -165,7 +165,7 @@ fn atraxa_etb_choice_offers_revealed_library_not_graveyard() {
                 zone_owner: ZoneOwner::Controller,
                 filter: None,
                 chooser: Chooser::Controller.into(),
-                candidate_source: crate::types::ability::ZoneChoiceCandidateSource::Legacy,
+                candidate_source: ZoneChoiceCandidateSource::Legacy,
                 reciprocal_role: None,
                 up_to: true,
                 selection: CardSelectionMode::Chosen,

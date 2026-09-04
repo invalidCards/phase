@@ -8595,7 +8595,7 @@ pub(super) fn try_parse_scoped_does_the_same(text: &str) -> Option<PlayerFilter>
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ability::{QuantityExpr, SearchSelectionConstraint};
+    use crate::types::ability::{QuantityExpr, SearchSelectionConstraint, ZoneChoiceChooser};
 
     #[test]
     fn face_down_pile_is_dig_lookback_transparent() {
@@ -11843,7 +11843,7 @@ mod tests {
         );
         assert_eq!(
             *chooser,
-            Chooser::Controller,
+            ZoneChoiceChooser::Controller,
             "the spell's controller chooses"
         );
         let filter = filter

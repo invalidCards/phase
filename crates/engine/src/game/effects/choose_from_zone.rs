@@ -1429,7 +1429,7 @@ fn assign_distinct_categories(card_options: &[Vec<usize>], used: &mut [bool], id
 mod tests {
     use super::*;
     use crate::game::zones::create_object;
-    use crate::types::ability::{TypeFilter, TypedFilter};
+    use crate::types::ability::{Chooser, TypeFilter, TypedFilter};
     use crate::types::counter::CounterType;
     use crate::types::identifiers::{CardId, TrackedSetId};
     use crate::types::zones::Zone;

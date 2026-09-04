@@ -33629,6 +33629,7 @@ mod tests {
             up_to: false,
             constraint: None,
             source_id: ObjectId(100),
+            reciprocal_role: None,
         }));
         variants.push(Box::new(WaitingFor::ChooseOneOfBranch {
             player: PlayerId(0),
