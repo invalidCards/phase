@@ -5090,18 +5090,7 @@ fn rw_effect(
             p.merge(rw_quantity_expr(count));
             (p, None)
         }
-        Effect::ChooseFromZone {
-            filter: _,
-            count: _,
-            zone: _,
-            additional_zones: _,
-            zone_owner: _,
-            chooser: _,
-            up_to: _,
-            selection: _,
-            constraint: _,
-            ..
-        } => {
+        Effect::ChooseFromZone { .. } => {
             let mut p = ext_write(StateKind::SetMembership);
             p.writes_external.set(StateKind::HandLibrary);
             p.writes_membership_external_census.merge(Census::Any);

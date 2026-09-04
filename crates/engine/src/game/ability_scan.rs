@@ -1523,18 +1523,7 @@ fn scan_effect(x: &Effect, mode: ScanMode) -> Axes {
         }
         Effect::ProcessRadCounters => Axes::NONE,
         Effect::GrantCastingPermission { .. } => Axes::CONSERVATIVE,
-        Effect::ChooseFromZone {
-            filter,
-            count: _,
-            zone: _,
-            additional_zones: _,
-            zone_owner: _,
-            chooser: _,
-            up_to: _,
-            selection: _,
-            constraint: _,
-            ..
-        } => {
+        Effect::ChooseFromZone { filter, .. } => {
             let mut acc = Axes::NONE;
             if let Some(x) = filter {
                 acc = acc.or(scan_target_filter(x, target_ctx, mode));
