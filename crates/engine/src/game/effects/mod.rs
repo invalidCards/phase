@@ -6998,7 +6998,9 @@ pub(crate) fn publish_fresh_tracked_set(
     set_id
 }
 
-/// An immutable capability for one reciprocal producer → consumer transition.
+/// CR 608.2c + CR 608.2d: An immutable capability for one reciprocal producer
+/// → consumer transition preserves the ordered instruction and the player who
+/// must announce the later resolution-time choice.
 /// The prompt is public state; its continuation is not. Snapshotting the exact
 /// active frame prevents a stale or buried continuation from being consumed.
 #[derive(Clone)]
@@ -7236,7 +7238,10 @@ pub(super) fn complete_reciprocal_consume_no_candidates(
 
 /// Drive the no-first-candidate branch of a reciprocal sequential choice.
 /// There is no selected-card owner to bind "that player", so the actual
-/// opponent population supplies the only legal continuation topology.
+/// opponent population supplies the only legal continuation topology. Dawnbreak
+/// Reclaimer's official ruling specifically requires this continuation: even
+/// with no creature card in an opponent's graveyard, its controller chooses an
+/// opponent to choose a creature card from the controller's graveyard.
 fn drive_empty_reciprocal_producer(
     state: &mut GameState,
     ability: &ResolvedAbility,
@@ -13200,6 +13205,9 @@ fn resolve_chain_body(
         publish_tracked_set_with_causes(state, affected_with_causes);
     }
 
+    // CR 608.2c + CR 608.2d: after a resolved producer has no legal candidate,
+    // continue the printed reciprocal instruction and present any required
+    // resolution-time choice before evaluating its optional return.
     if drive_empty_reciprocal_producer(state, ability, events, depth)? {
         return Ok(());
     }

@@ -81,7 +81,9 @@ use nom::Parser;
 
 use super::oracle_nom::bridge::nom_on_lower;
 use super::oracle_nom::condition::parse_reflexive_conditional_connector;
+use super::oracle_nom::enters_under::{parse_control_clause, ControlClausePossessor};
 use super::oracle_nom::error::OracleResult;
+use super::oracle_nom::filter as nom_filter;
 use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_nom::quantity as nom_quantity;
 use super::oracle_nom::target as nom_target;
@@ -32339,10 +32341,27 @@ fn unimplemented_clause(
     .push();
 }
 
-/// Parse the reciprocal sequential-graveyard choice class before ordinary
-/// sentence splitting. A recognized opener owns the entire instruction, so a
-/// malformed tail remains one strict unsupported clause rather than a partial
-/// choice chain.
+/// A card descriptor followed by its explicitly owned candidate zone.
+///
+/// This grammar deliberately keeps the descriptor, zone owner, and zone as
+/// separate productions. The reciprocal lowering below currently owns the
+/// graveyard/opponent→graveyard/you class, but parsing those axes separately
+/// keeps a near-miss honest instead of recognizing a Dawnbreak-shaped sentence
+/// by its complete text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReciprocalOwnedZoneDescriptor {
+    filter: TargetFilter,
+    owner: ControllerRef,
+    zone: Zone,
+}
+
+/// The destination/control rider of an optional reciprocal return.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReciprocalReturnDestination {
+    zone: Zone,
+    control: ControlClausePossessor,
+}
+
 fn parse_reciprocal_card_descriptor(input: &str) -> OracleResult<'_, TargetFilter> {
     let (input, _) = opt(alt((tag("a "), tag("an ")))).parse(input)?;
     let (input, filter) = nom_target::parse_type_phrase(input)?;
@@ -32350,6 +32369,54 @@ fn parse_reciprocal_card_descriptor(input: &str) -> OracleResult<'_, TargetFilte
     Ok((input, filter))
 }
 
+fn parse_reciprocal_zone_owner(input: &str) -> OracleResult<'_, ControllerRef> {
+    alt((
+        value(ControllerRef::Opponent, tag("an opponent's ")),
+        value(ControllerRef::You, tag("your ")),
+    ))
+    .parse(input)
+}
+
+fn parse_reciprocal_zone_word(input: &str) -> OracleResult<'_, Zone> {
+    alt((
+        value(Zone::Battlefield, tag("the battlefield")),
+        value(Zone::Graveyard, tag("graveyard")),
+        value(Zone::Hand, tag("hand")),
+        value(Zone::Library, tag("library")),
+        nom_filter::parse_zone_word,
+    ))
+    .parse(input)
+}
+
+fn parse_reciprocal_owned_zone_descriptor(
+    input: &str,
+) -> OracleResult<'_, ReciprocalOwnedZoneDescriptor> {
+    let (input, filter) = parse_reciprocal_card_descriptor(input)?;
+    let (input, _) = tag(" in ").parse(input)?;
+    let (input, owner) = parse_reciprocal_zone_owner(input)?;
+    let (input, zone) = parse_reciprocal_zone_word(input)?;
+    Ok((
+        input,
+        ReciprocalOwnedZoneDescriptor {
+            filter,
+            owner,
+            zone,
+        },
+    ))
+}
+
+fn parse_reciprocal_optional_return(input: &str) -> OracleResult<'_, ReciprocalReturnDestination> {
+    let (input, _) = tag(". you may return those cards to ").parse(input)?;
+    let (input, zone) = parse_reciprocal_zone_word(input)?;
+    let (input, _) = space1.parse(input)?;
+    let (input, control) = parse_control_clause(input)?;
+    Ok((input, ReciprocalReturnDestination { zone, control }))
+}
+
+/// Parse the reciprocal sequential-zone-choice grammar before ordinary sentence
+/// splitting. Lowering accepts the graveyard return class only when the parsed
+/// descriptor, owner, zone, and control components form that typed shape.
+/// A malformed or unsupported component therefore falls through honestly.
 fn parse_reciprocal_graveyard_choice_ir(text: &str, kind: AbilityKind) -> Option<EffectChainIr> {
     type E<'a> = OracleError<'a>;
     let lower = text.to_ascii_lowercase();
@@ -32357,19 +32424,30 @@ fn parse_reciprocal_graveyard_choice_ir(text: &str, kind: AbilityKind) -> Option
         all_consuming(terminated(
             (
                 tag::<_, _, E<'_>>("choose "),
-                parse_reciprocal_card_descriptor,
-                tag(" in an opponent's graveyard, then that player chooses "),
-                parse_reciprocal_card_descriptor,
-                tag(" in your graveyard. you may return those cards to the battlefield under their owners' control"),
+                parse_reciprocal_owned_zone_descriptor,
+                tag(", then that player chooses "),
+                parse_reciprocal_owned_zone_descriptor,
+                parse_reciprocal_optional_return,
             ),
             pair(opt(tag(".")), eof),
         ))
         .parse(input)
-        .map(|(rest, (_, first, _, second, _))| (rest, (first, second)))
+        .map(|(rest, (_, first, _, second, return_destination))| {
+            (rest, (first, second, return_destination))
+        })
     })?;
-    let ((first, second), _) = parsed;
+    let ((first, second, return_destination), _) = parsed;
+    if first.owner != ControllerRef::Opponent
+        || first.zone != Zone::Graveyard
+        || second.owner != ControllerRef::You
+        || second.zone != Zone::Graveyard
+        || return_destination.zone != Zone::Battlefield
+        || return_destination.control != ControlClausePossessor::Owner
+    {
+        return None;
+    }
     let first = add_filter_props(
-        first,
+        first.filter,
         &[
             FilterProp::InZone {
                 zone: Zone::Graveyard,
@@ -32380,7 +32458,7 @@ fn parse_reciprocal_graveyard_choice_ir(text: &str, kind: AbilityKind) -> Option
         ],
     );
     let second = add_filter_props(
-        second,
+        second.filter,
         &[
             FilterProp::InZone {
                 zone: Zone::Graveyard,

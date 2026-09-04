@@ -74,3 +74,50 @@ fn dawnbreak_reclaimer_binds_the_second_choice_to_the_first_cards_owner() {
         assert_eq!(object.controller, owner);
     }
 }
+
+/// The published Dawnbreak Reclaimer ruling keeps the second choice alive when
+/// no opponent graveyard supplies the first card: the controller chooses an
+/// opponent, who may still choose from the controller's graveyard.
+#[test]
+fn dawnbreak_reclaimer_empty_first_choice_still_offers_the_second_choice() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let second = scenario
+        .add_creature_to_graveyard(P0, "Controller Graveyard Creature", 3, 3)
+        .id();
+    let source = scenario.add_basic_land(P0, ManaColor::White);
+    let mut runner = scenario.build();
+
+    let definition = parse_effect_chain(ORACLE, AbilityKind::Spell);
+    let ability = build_resolved_from_def(&definition, source, P0);
+    let mut events = Vec::new();
+    resolve_ability_chain(runner.state_mut(), &ability, &mut events, 0)
+        .expect("the empty first choice continues to Dawnbreak's reciprocal choice");
+
+    match &runner.state().waiting_for {
+        WaitingFor::ChooseFromZoneChoice { player, cards, .. } => {
+            assert_eq!(
+                *player, P1,
+                "the only opponent chooses despite the empty first graveyard pool"
+            );
+            assert_eq!(cards, &vec![second]);
+        }
+        other => panic!("expected Dawnbreak's second graveyard choice, got {other:?}"),
+    }
+    runner
+        .act(GameAction::SelectCards {
+            cards: vec![second],
+        })
+        .expect("the chosen opponent selects the controller-owned creature");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::OptionalEffectChoice { player: P0, .. }
+    ));
+
+    runner
+        .act(GameAction::DecideOptionalEffect { accept: true })
+        .expect("the controller may return the one card selected by the second choice");
+    let object = &runner.state().objects[&second];
+    assert_eq!(object.zone, Zone::Battlefield);
+    assert_eq!(object.controller, P0);
+}

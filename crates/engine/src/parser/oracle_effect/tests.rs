@@ -144,6 +144,77 @@ fn dawnbreak_reclaimer_lowers_to_a_reciprocal_graveyard_choice_chain() {
     assert!(consume.sub_ability.expect("optional return").optional);
 }
 
+/// The reciprocal grammar composes card descriptors independently of the
+/// opponent/your graveyard and owner-controlled return structure.
+#[test]
+fn reciprocal_graveyard_choice_accepts_descriptor_matrix() {
+    for text in [
+        "Choose an artifact card in an opponent's graveyard, then that player chooses an enchantment card in your graveyard. You may return those cards to the battlefield under their owners' control.",
+        "Choose an enchantment card in an opponent's graveyard, then that player chooses an artifact card in your graveyard. You may return those cards to the battlefield under their owners' control.",
+    ] {
+        let def = parse_effect_chain(text, AbilityKind::Spell);
+        assert!(
+            matches!(
+                def.effect.as_ref(),
+                Effect::ChooseFromZone {
+                    reciprocal_role: Some(ReciprocalZoneChoiceRole::Produce),
+                    candidate_source: ZoneChoiceCandidateSource::Direct,
+                    filter: Some(_),
+                    ..
+                }
+            ),
+            "descriptor matrix entry must reach reciprocal lowering: {text}; got {:?}",
+            def.effect
+        );
+        assert!(
+            matches!(
+                def.sub_ability.as_deref().map(|ability| ability.effect.as_ref()),
+                Some(Effect::ChooseFromZone {
+                    reciprocal_role: Some(ReciprocalZoneChoiceRole::Consume),
+                    candidate_source: ZoneChoiceCandidateSource::Direct,
+                    filter: Some(_),
+                    ..
+                })
+            ),
+            "descriptor matrix entry must retain a reciprocal consumer: {text}"
+        );
+    }
+}
+
+/// A different optional-return component is not silently lowered as the
+/// battlefield-under-owner reciprocal class.
+#[test]
+fn reciprocal_graveyard_choice_near_miss_falls_through_honestly() {
+    let text = "Choose a creature card in an opponent's graveyard, then that player chooses a creature card in your graveyard. You may return those cards to your hand.";
+    assert!(
+        parse_reciprocal_graveyard_choice_ir(text, AbilityKind::Spell).is_none(),
+        "a non-owner-controlled return destination must not enter reciprocal lowering"
+    );
+
+    let def = parse_effect_chain(text, AbilityKind::Spell);
+    let mut cursor = Some(&def);
+    let mut has_unimplemented = false;
+    while let Some(ability) = cursor {
+        has_unimplemented |= matches!(ability.effect.as_ref(), Effect::Unimplemented { .. });
+        assert!(
+            !matches!(
+                ability.effect.as_ref(),
+                Effect::ChooseFromZone {
+                    reciprocal_role: Some(_),
+                    ..
+                }
+            ),
+            "near miss must not claim reciprocal semantics: {:?}",
+            ability.effect
+        );
+        cursor = ability.sub_ability.as_deref();
+    }
+    assert!(
+        has_unimplemented,
+        "the unrecognized return component must remain visible, not be swallowed"
+    );
+}
+
 #[test]
 fn nested_triggering_batch_in_non_trigger_chain_is_demoted_honestly() {
     let mut def = AbilityDefinition::new(
