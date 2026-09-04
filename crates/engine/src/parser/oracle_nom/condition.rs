@@ -8561,13 +8561,13 @@ fn type_filter_contains_any(filter: &TypeFilter) -> bool {
 /// named card zone. The default is intentionally reject-by-default so a future
 /// property cannot widen this parser without an explicit admissibility decision.
 fn is_admissible_zone_card_count_property(property: &FilterProp) -> bool {
-    match property {
+    matches!(
+        property,
         FilterProp::Historic
-        | FilterProp::NotHistoric
-        | FilterProp::HasSupertype { .. }
-        | FilterProp::NotSupertype { .. } => true,
-        _ => false,
-    }
+            | FilterProp::NotHistoric
+            | FilterProp::HasSupertype { .. }
+            | FilterProp::NotSupertype { .. }
+    )
 }
 
 /// Self-referential source alternatives shared by the "exiled with [source]"
