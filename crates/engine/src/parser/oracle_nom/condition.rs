@@ -8446,8 +8446,10 @@ fn parse_there_are_conditions_with_quantity(
         (None, Some(_)) => Comparator::GE,
         (None, None) => Comparator::EQ,
     };
-    if let Ok((rest, qty)) = parse_filtered_zone_card_count(rest) {
-        return Ok((rest, make_quantity_comparison(qty, comparator, n)));
+    match parse_filtered_zone_card_count(rest) {
+        Ok((rest, qty)) => return Ok((rest, make_quantity_comparison(qty, comparator, n))),
+        Err(nom::Err::Error(_)) => {}
+        Err(error @ (nom::Err::Failure(_) | nom::Err::Incomplete(_))) => return Err(error),
     }
     if let Ok((rest_after_type, type_text)) =
         take_until::<_, _, OracleError<'_>>(" cards total in ").parse(rest)
@@ -8497,7 +8499,11 @@ fn parse_filtered_zone_card_count(input: &str) -> OracleResult<'_, QuantityRef> 
         return Err(oracle_err(input));
     }
     let (rest, _) = tag(" in ").parse(rest_after_noun)?;
-    let (rest, (zone, scope)) = parse_scoped_zone_count_ref(rest)?;
+    let (rest, (zone, scope)) = cut(preceded(
+        peek(alt((tag("your "), tag("all graveyards")))),
+        parse_scoped_zone_count_ref,
+    ))
+    .parse(rest)?;
     Ok((
         rest,
         QuantityRef::ZoneCardCount {
@@ -14843,13 +14849,6 @@ mod tests {
                 CountScope::Controller,
             ),
             (
-                "there are five artifact cards in an opponent's graveyard",
-                Comparator::EQ,
-                5,
-                typed(vec![TypeFilter::Artifact], Vec::new()),
-                CountScope::Opponents,
-            ),
-            (
                 "there are two nonbasic land cards in all graveyards",
                 Comparator::EQ,
                 2,
@@ -14972,11 +14971,29 @@ mod tests {
             parse_filtered_zone_card_count("historic cards in your graveyard")
                 .expect("positive reach guard for rejected filtered-count forms");
         assert!(matches!(plural_historic, QuantityRef::ZoneCardCount { .. }));
-        assert!(parse_filtered_zone_card_count("historic card in your graveyard").is_err());
-        assert!(
-            parse_filtered_zone_card_count("artifact cards you control in your graveyard").is_err()
-        );
-        assert!(parse_filtered_zone_card_count("tapped creature cards in your graveyard").is_err());
+        assert!(matches!(
+            parse_filtered_zone_card_count("historic card in your graveyard"),
+            Err(nom::Err::Error(_))
+        ));
+        assert!(matches!(
+            parse_filtered_zone_card_count("artifact cards you control in your graveyard"),
+            Err(nom::Err::Error(_))
+        ));
+        assert!(matches!(
+            parse_filtered_zone_card_count("tapped creature cards in your graveyard"),
+            Err(nom::Err::Error(_))
+        ));
+
+        for text in [
+            "there are five artifact cards in an opponent's graveyard",
+            "there are five artifact cards in each player's graveyard",
+            "there are five artifact cards in graveyard",
+        ] {
+            assert!(
+                matches!(parse_inner_condition(text), Err(nom::Err::Failure(_))),
+                "unsupported filtered-count scope must commit as Failure for {text:?}"
+            );
+        }
 
         let (rest, _) =
             parse_inner_condition("there are four or more historic cards in your graveyard total")
