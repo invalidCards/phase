@@ -8528,7 +8528,7 @@ fn is_admissible_zone_card_count_filter(filter: &TargetFilter) -> bool {
             controller.is_none()
                 && !type_filters.is_empty()
                 && !type_filters.iter().any(type_filter_contains_any)
-                && !(matches!(type_filters.as_slice(), [TypeFilter::Card]) && properties.is_empty())
+                && !properties.is_empty()
                 && properties
                     .iter()
                     .all(is_admissible_zone_card_count_property)
@@ -14718,12 +14718,8 @@ mod tests {
                 lhs: QuantityExpr::Ref {
                     qty: QuantityRef::ZoneCardCount {
                         zone: ZoneRef::Graveyard,
-                        card_types: Vec::new(),
-                        filter: Some(TargetFilter::Typed(TypedFilter {
-                            type_filters: vec![TypeFilter::Creature],
-                            controller: None,
-                            properties: Vec::new(),
-                        })),
+                        card_types: vec![TypeFilter::Creature],
+                        filter: None,
                         scope: CountScope::Controller,
                     },
                 },
@@ -14816,20 +14812,6 @@ mod tests {
         };
         let cases = [
             (
-                "there are fewer than six creature cards in your graveyard",
-                Comparator::LT,
-                6,
-                typed(vec![TypeFilter::Creature], Vec::new()),
-                CountScope::Controller,
-            ),
-            (
-                "there are more than two Lesson cards in your graveyard",
-                Comparator::GT,
-                2,
-                typed(vec![TypeFilter::Subtype("Lesson".to_string())], Vec::new()),
-                CountScope::Controller,
-            ),
-            (
                 "there are four or more historic cards in your graveyard",
                 Comparator::GE,
                 4,
@@ -14837,15 +14819,22 @@ mod tests {
                 CountScope::Controller,
             ),
             (
-                "there are three or more instant or sorcery cards in your graveyard",
-                Comparator::GE,
+                "there are two nonhistoric cards in all graveyards",
+                Comparator::EQ,
+                2,
+                typed(vec![TypeFilter::Card], vec![FilterProp::NotHistoric]),
+                CountScope::All,
+            ),
+            (
+                "there are three legendary creature cards in your graveyard",
+                Comparator::EQ,
                 3,
-                TargetFilter::Or {
-                    filters: vec![
-                        typed(vec![TypeFilter::Instant], Vec::new()),
-                        typed(vec![TypeFilter::Sorcery], Vec::new()),
-                    ],
-                },
+                typed(
+                    vec![TypeFilter::Creature],
+                    vec![FilterProp::HasSupertype {
+                        value: Supertype::Legendary,
+                    }],
+                ),
                 CountScope::Controller,
             ),
             (
@@ -14858,6 +14847,33 @@ mod tests {
                         value: Supertype::Basic,
                     }],
                 ),
+                CountScope::All,
+            ),
+            (
+                "there are three or more legendary creature or nonbasic land cards in all graveyards",
+                Comparator::GE,
+                3,
+                TargetFilter::Or {
+                    filters: vec![
+                        typed(
+                            vec![TypeFilter::Creature],
+                            vec![FilterProp::HasSupertype {
+                                value: Supertype::Legendary,
+                            }],
+                        ),
+                        typed(
+                            vec![TypeFilter::Land],
+                            vec![
+                                FilterProp::NotSupertype {
+                                    value: Supertype::Basic,
+                                },
+                                FilterProp::HasSupertype {
+                                    value: Supertype::Legendary,
+                                },
+                            ],
+                        ),
+                    ],
+                },
                 CountScope::All,
             ),
         ];
@@ -14903,6 +14919,27 @@ mod tests {
                     },
                 },
                 comparator: Comparator::EQ,
+                rhs: QuantityExpr::Fixed { value: 3 },
+            }
+        );
+
+        let (rest, instant_or_sorcery) = parse_inner_condition(
+            "there are three or more instant or sorcery cards in your graveyard",
+        )
+        .expect("property-free type disjunction must retain its legacy count path");
+        assert_eq!(rest, "");
+        assert_eq!(
+            instant_or_sorcery,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::ZoneCardCount {
+                        zone: ZoneRef::Graveyard,
+                        card_types: vec![TypeFilter::Instant, TypeFilter::Sorcery],
+                        filter: None,
+                        scope: CountScope::Controller,
+                    },
+                },
+                comparator: Comparator::GE,
                 rhs: QuantityExpr::Fixed { value: 3 },
             }
         );
@@ -14975,6 +15012,19 @@ mod tests {
             parse_filtered_zone_card_count("historic card in your graveyard"),
             Err(nom::Err::Error(_))
         ));
+        for text in [
+            "creature cards in your graveyard",
+            "Lesson cards in your graveyard",
+            "instant or sorcery cards in your graveyard",
+        ] {
+            assert!(
+                matches!(
+                    parse_filtered_zone_card_count(text),
+                    Err(nom::Err::Error(_))
+                ),
+                "property-free filter must fall through to the legacy count parser for {text:?}"
+            );
+        }
         assert!(matches!(
             parse_filtered_zone_card_count("artifact cards you control in your graveyard"),
             Err(nom::Err::Error(_))
@@ -14985,9 +15035,9 @@ mod tests {
         ));
 
         for text in [
-            "there are five artifact cards in an opponent's graveyard",
-            "there are five artifact cards in each player's graveyard",
-            "there are five artifact cards in graveyard",
+            "there are five historic cards in an opponent's graveyard",
+            "there are five historic cards in each player's graveyard",
+            "there are five historic cards in graveyard",
         ] {
             assert!(
                 matches!(parse_inner_condition(text), Err(nom::Err::Failure(_))),
@@ -15045,12 +15095,8 @@ mod tests {
                 lhs: QuantityExpr::Ref {
                     qty: QuantityRef::ZoneCardCount {
                         zone: ZoneRef::Graveyard,
-                        card_types: Vec::new(),
-                        filter: Some(TargetFilter::Typed(TypedFilter {
-                            type_filters: vec![TypeFilter::Creature],
-                            controller: None,
-                            properties: Vec::new(),
-                        })),
+                        card_types: vec![TypeFilter::Creature],
+                        filter: None,
                         scope: CountScope::Controller,
                     },
                 },
@@ -15235,12 +15281,8 @@ mod tests {
                 lhs: QuantityExpr::Ref {
                     qty: QuantityRef::ZoneCardCount {
                         zone: ZoneRef::Graveyard,
-                        card_types: Vec::new(),
-                        filter: Some(TargetFilter::Typed(TypedFilter {
-                            type_filters: vec![TypeFilter::Subtype("Lesson".to_string())],
-                            controller: None,
-                            properties: Vec::new(),
-                        })),
+                        card_types: vec![TypeFilter::Subtype("Lesson".to_string())],
+                        filter: None,
                         scope: CountScope::Controller,
                     },
                 },
