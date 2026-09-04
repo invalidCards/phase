@@ -8446,6 +8446,9 @@ fn parse_there_are_conditions_with_quantity(
         (None, Some(_)) => Comparator::GE,
         (None, None) => Comparator::EQ,
     };
+    if let Ok((rest, qty)) = parse_historic_zone_card_count(rest) {
+        return Ok((rest, make_quantity_comparison(qty, comparator, n)));
+    }
     if let Ok((rest_after_type, type_text)) =
         take_until::<_, _, OracleError<'_>>(" cards total in ").parse(rest)
     {
@@ -8473,6 +8476,48 @@ fn parse_there_are_conditions_with_quantity(
             comparator,
             n,
         ),
+    ))
+}
+
+/// CR 700.6: Historic is a card property (legendary, artifact, or Saga), so
+/// historic-card zone counts retain the typed property filter for the quantity
+/// resolver instead of flattening it into a lexical noun or a card-type list.
+///
+/// The type phrase and locative zone are deliberately parsed by their separate
+/// authorities. `parse_type_phrase` owns the complete noun phrase, while
+/// `parse_scoped_zone_count_ref` owns the player/zone scope after `in `.
+fn parse_historic_zone_card_count(input: &str) -> OracleResult<'_, QuantityRef> {
+    let (rest_after_noun, noun) = take_until(" in ").parse(input)?;
+    let (after_cards, _) = terminated(take_until("cards"), tag("cards")).parse(noun)?;
+    if !after_cards.is_empty() {
+        return Err(oracle_err(input));
+    }
+    let (filter, remainder) = parse_type_phrase(noun);
+    let expected_historic = TargetFilter::Typed(TypedFilter {
+        type_filters: vec![TypeFilter::Card],
+        controller: None,
+        properties: vec![FilterProp::Historic],
+    });
+    let expected_not_historic = TargetFilter::Typed(TypedFilter {
+        type_filters: vec![TypeFilter::Card],
+        controller: None,
+        properties: vec![FilterProp::NotHistoric],
+    });
+    if !remainder.trim().is_empty()
+        || (filter != expected_historic && filter != expected_not_historic)
+    {
+        return Err(oracle_err(input));
+    }
+    let (rest, _) = tag(" in ").parse(rest_after_noun)?;
+    let (rest, (zone, scope)) = parse_scoped_zone_count_ref(rest)?;
+    Ok((
+        rest,
+        QuantityRef::ZoneCardCount {
+            zone,
+            card_types: Vec::new(),
+            filter: Some(filter),
+            scope,
+        },
     ))
 }
 
@@ -14631,6 +14676,94 @@ mod tests {
             }
             other => panic!("expected ZoneCardCount Creature LT 6, got {other:?}"),
         }
+    }
+
+    /// Historic is a typed card property, while printed graveyard ownership
+    /// remains on `CountScope`; the two axes must not leak into each other.
+    #[test]
+    fn there_are_historic_cards_in_scoped_zone_uses_typed_zone_card_count() {
+        for (text, expected_property, expected_zone, expected_scope) in [
+            (
+                "there are four or more historic cards in your graveyard",
+                FilterProp::Historic,
+                ZoneRef::Graveyard,
+                CountScope::Controller,
+            ),
+            (
+                "there are two nonhistoric cards in all graveyards",
+                FilterProp::NotHistoric,
+                ZoneRef::Graveyard,
+                CountScope::All,
+            ),
+        ] {
+            let (rest, condition) = parse_inner_condition(text)
+                .unwrap_or_else(|error| panic!("must parse {text:?}: {error:?}"));
+            assert_eq!(rest, "", "complete condition must consume {text:?}");
+            let StaticCondition::QuantityComparison {
+                lhs:
+                    QuantityExpr::Ref {
+                        qty:
+                            QuantityRef::ZoneCardCount {
+                                zone,
+                                card_types,
+                                filter: Some(TargetFilter::Typed(filter)),
+                                scope,
+                            },
+                    },
+                comparator,
+                rhs,
+            } = condition
+            else {
+                panic!("expected typed ZoneCardCount for {text:?}, got {condition:?}");
+            };
+            assert_eq!(zone, expected_zone);
+            assert_eq!(scope, expected_scope);
+            assert!(card_types.is_empty(), "typed filter owns historic noun");
+            assert_eq!(filter.type_filters, vec![TypeFilter::Card]);
+            assert_eq!(filter.controller, None, "scope must not leak into filter");
+            assert_eq!(filter.properties, vec![expected_property]);
+            assert!(matches!(rhs, QuantityExpr::Fixed { value: 4 | 2 }));
+            assert!(matches!(comparator, Comparator::GE | Comparator::EQ));
+        }
+    }
+
+    /// The historic-count bridge is narrow: it consumes only the canonical
+    /// plural card noun plus a valid scoped-zone suffix, then leaves the next
+    /// clause boundary to its caller. Existing typed-card counts continue to
+    /// use the legacy quantity parser.
+    #[test]
+    fn historic_zone_card_count_declines_malformed_forms_and_preserves_boundaries() {
+        let (rest, _) = parse_inner_condition(
+            "there are four or more historic cards in your graveyard, draw a card",
+        )
+        .expect("positive historic-count guard must parse");
+        assert_eq!(rest, ", draw a card");
+        assert!(parse_there_are_conditions(
+            "there are four or more historic card in your graveyard"
+        )
+        .is_err());
+        assert!(
+            parse_there_are_conditions(
+                "there are four or more historic cards in your graveyard total"
+            )
+            .is_ok(),
+            "the parser must leave an overextended tail rather than absorb it"
+        );
+
+        let (rest, condition) =
+            parse_inner_condition("there are fewer than six creature cards in your graveyard")
+                .expect("existing typed-card count remains reachable");
+        assert_eq!(rest, "");
+        assert!(matches!(
+            condition,
+            StaticCondition::QuantityComparison {
+                lhs: QuantityExpr::Ref {
+                    qty: QuantityRef::ZoneCardCount { filter: None, .. }
+                },
+                comparator: Comparator::LT,
+                rhs: QuantityExpr::Fixed { value: 6 },
+            }
+        ));
     }
 
     /// CR 107.1 + CR 611.3a: "there are fewer than N cards ..." with the plain
