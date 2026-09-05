@@ -26961,37 +26961,39 @@ fn is_choose_as_targeting(rest: &str) -> bool {
     false
 }
 
-/// CR 205.2: Recognize the enumerated form of a "choose a card type" choice.
-/// Older cards (e.g. Cloud Key) spell out the *complete* list of choosable card
-/// types ("artifact, creature, enchantment, instant, or sorcery") instead of
-/// the modern generic phrasing. A *partial* type list (e.g. "artifact, creature,
-/// or land" — Storage Matrix, Turnabout, A Killer Among Us) is a restricted
-/// modal selection, NOT a card-type chooser, and must remain `Labeled`. So this
-/// matches only when `rest` (after an optional trailing period) is exactly the
-/// canonical card-type set, in any order.
-fn is_card_type_enumeration(rest: &str) -> bool {
-    fn card_type_word(input: &str) -> nom::IResult<&str, &str, OracleError<'_>> {
-        alt((
-            tag("artifact"),
-            tag("creature"),
-            tag("enchantment"),
-            tag("instant"),
-            tag("sorcery"),
-        ))
-        .parse(input)
-    }
+/// Recognize Cloud Key-style enumerated card-type choices. The exact complete
+/// five-type grammar is an explicit ordered domain; partial, broader, or
+/// duplicate lists remain labeled choices.
+fn parse_card_type_enumeration(rest: &str) -> Option<Vec<CoreType>> {
     fn separator(input: &str) -> nom::IResult<&str, &str, OracleError<'_>> {
         alt((tag(", or "), tag(", "), tag(" or "))).parse(input)
     }
-    let rest = rest.trim_end_matches('.').trim_end();
-    match all_consuming(nom::multi::separated_list1(separator, card_type_word)).parse(rest) {
-        Ok((_, mut items)) => {
-            items.sort_unstable();
-            items.dedup();
-            // The complete canonical card-type set (alphabetical).
-            items == ["artifact", "creature", "enchantment", "instant", "sorcery"]
+    match all_consuming(terminated(
+        nom::multi::separated_list1(separator, nom_primitives::parse_core_type),
+        opt(tag(".")),
+    ))
+    .parse(rest)
+    {
+        Ok((_, items))
+            if items.len() == 5
+                && items.iter().all(|card_type| {
+                    matches!(
+                        card_type,
+                        CoreType::Artifact
+                            | CoreType::Creature
+                            | CoreType::Enchantment
+                            | CoreType::Instant
+                            | CoreType::Sorcery
+                    )
+                })
+                && items
+                    .iter()
+                    .enumerate()
+                    .all(|(index, card_type)| !items[..index].contains(card_type)) =>
+        {
+            Some(items)
         }
-        Err(_) => false,
+        _ => None,
     }
 }
 
@@ -26999,7 +27001,7 @@ fn is_card_type_enumeration(rest: &str) -> bool {
 /// Oracle-listed candidate set such as A Killer Among Us' "Human, Merfolk, or
 /// Goblin". Returns the candidate creature types in source order (canonicalized)
 /// when `rest` is a 2+-element list of creature-type words, else `None`. This is
-/// the creature-type analogue of `is_card_type_enumeration`, but yields the
+/// the creature-type analogue of `parse_card_type_enumeration`, but yields the
 /// restricted `options` list rather than collapsing to the generic chooser
 /// (a partial candidate set is the whole point — CR 205.3m + CR 607.2d).
 fn parse_creature_type_enumeration(rest: &str) -> Option<Vec<String>> {
@@ -27276,14 +27278,10 @@ pub(crate) fn parse_named_choice_object_with_provenance(
         Some(ChoiceType::BasicLandType)
     } else if tag::<_, _, E>("a card type").parse(rest).is_ok() {
         Some(ChoiceType::card_type())
-    } else if is_card_type_enumeration(rest) {
-        // CR 205.2: Older "choose a card type" cards (Cloud Key) spell out the
-        // options ("artifact, creature, enchantment, instant, or sorcery")
-        // rather than using the modern generic phrasing. Treat the enumeration
-        // as the same CardType choice so the chosen type persists for downstream
-        // `IsChosenCardType` reads (cost reduction, protection from the chosen
-        // type, etc.).
-        Some(ChoiceType::card_type())
+    } else if let Some(options) = parse_card_type_enumeration(rest) {
+        // Older templating spells out this fixed candidate set. Keep the
+        // printed order for the choice prompt and answer-validation domain.
+        Some(ChoiceType::card_type_from(options))
     } else if alt((
         tag::<_, _, E>("a card name"),
         tag("any card name"),

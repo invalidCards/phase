@@ -684,11 +684,11 @@ pub enum ChoiceType {
     },
     OddOrEven,
     BasicLandType,
-    /// CR 205.2a: A choice among card types. `excluded` narrows the offered
-    /// set below the full seven-type list (e.g. Archon of Valor's Reach
-    /// excludes Creature and Land, leaving "artifact, enchantment, instant,
-    /// sorcery, or planeswalker") — mirrors the `Color { excluded }` axis.
+    /// A choice among card types. `options`, when non-empty, is the explicit
+    /// Oracle-listed domain and preserves its printed order. `excluded` then
+    /// narrows that domain — mirrors the `Color { excluded }` axis.
     CardType {
+        options: Vec<CoreType>,
         excluded: Vec<CoreType>,
     },
     CardName,
@@ -865,12 +865,42 @@ impl ChoiceType {
 
     pub fn card_type() -> Self {
         Self::CardType {
+            options: Vec::new(),
+            excluded: Vec::new(),
+        }
+    }
+
+    /// Card-type choice restricted to an explicit Oracle-listed candidate set.
+    pub fn card_type_from(options: Vec<CoreType>) -> Self {
+        Self::CardType {
+            options,
             excluded: Vec::new(),
         }
     }
 
     pub fn card_type_excluding(excluded: Vec<CoreType>) -> Self {
-        Self::CardType { excluded }
+        Self::CardType {
+            options: Vec::new(),
+            excluded,
+        }
+    }
+
+    /// The authoritative legal card-type domain for this choice. Explicit
+    /// options retain Oracle order; the generic form uses the engine policy.
+    pub fn legal_card_types(&self) -> Vec<CoreType> {
+        let Self::CardType { options, excluded } = self else {
+            return Vec::new();
+        };
+        let candidates: &[CoreType] = if options.is_empty() {
+            &CoreType::CHOOSABLE_TYPES
+        } else {
+            options
+        };
+        candidates
+            .iter()
+            .copied()
+            .filter(|card_type| !excluded.contains(card_type))
+            .collect()
     }
 
     /// Unrestricted "choose an opponent" (CR 102.3), independent of any other
@@ -1056,16 +1086,27 @@ impl Serialize for ChoiceType {
             Self::BasicLandType => {
                 serializer.serialize_unit_variant("ChoiceType", 3, "BasicLandType")
             }
-            // Serialize the unrestricted form as the legacy unit variant
-            // "CardType" so existing card-data JSON stays byte-stable; only
-            // emit the struct form when a restriction is present.
-            Self::CardType { excluded } => {
-                if excluded.is_empty() {
+            // Preserve both legacy forms: bare generic CardType and the old
+            // excluded-only structured payload. Explicit Oracle options are
+            // emitted first, followed by exclusions when present.
+            Self::CardType { options, excluded } => {
+                if options.is_empty() && excluded.is_empty() {
                     serializer.serialize_unit_variant("ChoiceType", 4, "CardType")
                 } else {
-                    let mut variant =
-                        serializer.serialize_struct_variant("ChoiceType", 4, "CardType", 1)?;
-                    variant.serialize_field("excluded", excluded)?;
+                    let field_count =
+                        usize::from(!options.is_empty()) + usize::from(!excluded.is_empty());
+                    let mut variant = serializer.serialize_struct_variant(
+                        "ChoiceType",
+                        4,
+                        "CardType",
+                        field_count,
+                    )?;
+                    if !options.is_empty() {
+                        variant.serialize_field("options", options)?;
+                    }
+                    if !excluded.is_empty() {
+                        variant.serialize_field("excluded", excluded)?;
+                    }
                     variant.end()
                 }
             }
@@ -1223,6 +1264,8 @@ impl<'de> Deserialize<'de> for ChoiceType {
             },
             CardType {
                 #[serde(default)]
+                options: Vec<CoreType>,
+                #[serde(default)]
                 excluded: Vec<CoreType>,
             },
             NumberRange {
@@ -1306,7 +1349,9 @@ impl<'de> Deserialize<'de> for ChoiceType {
             ChoiceTypeRepr::Data(data) => match data {
                 ChoiceTypeData::CreatureType { options } => Ok(Self::CreatureType { options }),
                 ChoiceTypeData::Color { excluded } => Ok(Self::Color { excluded }),
-                ChoiceTypeData::CardType { excluded } => Ok(Self::CardType { excluded }),
+                ChoiceTypeData::CardType { options, excluded } => {
+                    Ok(Self::CardType { options, excluded })
+                }
                 ChoiceTypeData::NumberRange {
                     min,
                     max,
@@ -2249,9 +2294,12 @@ impl ChoiceValue {
             ChoiceType::BasicLandType => {
                 value.parse::<BasicLandType>().ok().map(Self::BasicLandType)
             }
-            ChoiceType::CardType { excluded } => {
+            choice_type @ ChoiceType::CardType { .. } => {
                 let core_type = value.parse::<CoreType>().ok()?;
-                (!excluded.contains(&core_type)).then_some(Self::CardType(core_type))
+                choice_type
+                    .legal_card_types()
+                    .contains(&core_type)
+                    .then_some(Self::CardType(core_type))
             }
             ChoiceType::OddOrEven => value.parse::<Parity>().ok().map(Self::OddOrEven),
             ChoiceType::CardName => Some(Self::CardName(value.to_string())),
@@ -31692,6 +31740,66 @@ mod tests {
             ChoiceValue::from_choice(&ChoiceType::color_excluding(vec![ManaColor::White]), "Blue"),
             Some(ChoiceValue::Color(ManaColor::Blue))
         );
+    }
+
+    #[test]
+    fn card_type_choice_serde_preserves_legacy_and_explicit_domains() {
+        let generic: ChoiceType = serde_json::from_str(r#""CardType""#).unwrap();
+        assert_eq!(generic, ChoiceType::card_type());
+        assert_eq!(serde_json::to_string(&generic).unwrap(), r#""CardType""#);
+
+        let old_restricted = r#"{"CardType":{"excluded":["Creature","Land"]}}"#;
+        let decoded: ChoiceType = serde_json::from_str(old_restricted).unwrap();
+        assert_eq!(
+            decoded,
+            ChoiceType::CardType {
+                options: vec![],
+                excluded: vec![CoreType::Creature, CoreType::Land],
+            }
+        );
+        assert_eq!(serde_json::to_string(&decoded).unwrap(), old_restricted);
+
+        let explicit = r#"{"CardType":{"options":["Sorcery","Artifact"],"excluded":["Artifact"]}}"#;
+        let decoded: ChoiceType = serde_json::from_str(explicit).unwrap();
+        assert_eq!(
+            decoded,
+            ChoiceType::CardType {
+                options: vec![CoreType::Sorcery, CoreType::Artifact],
+                excluded: vec![CoreType::Artifact],
+            }
+        );
+        assert_eq!(serde_json::to_string(&decoded).unwrap(), explicit);
+    }
+
+    #[test]
+    fn card_type_choice_value_uses_the_authoritative_legal_domain() {
+        let generic = ChoiceType::card_type();
+        assert_eq!(
+            generic.legal_card_types(),
+            CoreType::CHOOSABLE_TYPES.to_vec()
+        );
+        assert_eq!(
+            ChoiceValue::from_choice(&generic, "Battle"),
+            None,
+            "generic engine policy must reject Battle"
+        );
+        assert_eq!(
+            ChoiceValue::from_choice(&generic, "Kindred"),
+            None,
+            "generic engine policy must reject Kindred"
+        );
+
+        let explicit = ChoiceType::CardType {
+            options: vec![CoreType::Sorcery, CoreType::Artifact],
+            excluded: vec![CoreType::Artifact],
+        };
+        assert_eq!(explicit.legal_card_types(), vec![CoreType::Sorcery]);
+        assert_eq!(
+            ChoiceValue::from_choice(&explicit, "Sorcery"),
+            Some(ChoiceValue::CardType(CoreType::Sorcery))
+        );
+        assert_eq!(ChoiceValue::from_choice(&explicit, "Artifact"), None);
+        assert_eq!(ChoiceValue::from_choice(&explicit, "Land"), None);
     }
 
     #[test]

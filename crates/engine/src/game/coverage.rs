@@ -2170,8 +2170,8 @@ fn fmt_choice_type(ct: &ChoiceType) -> String {
         }
         ChoiceType::OddOrEven => "odd or even",
         ChoiceType::BasicLandType => "basic land type",
-        ChoiceType::CardType { excluded } => {
-            if excluded.is_empty() {
+        ChoiceType::CardType { options, excluded } => {
+            if options.is_empty() && excluded.is_empty() {
                 "card type"
             } else {
                 "restricted card type"
@@ -16732,6 +16732,25 @@ mod tests {
         assert_eq!(
             render(DamageChannel::Excess, AggregateFunction::Min),
             "excess amount from preceding effect"
+        );
+    }
+
+    #[test]
+    fn choice_type_coverage_format_distinguishes_generic_and_restricted_domains() {
+        assert_eq!(fmt_choice_type(&ChoiceType::card_type()), "card type");
+        assert_eq!(
+            fmt_choice_type(&ChoiceType::CardType {
+                options: vec![crate::types::card_type::CoreType::Artifact],
+                excluded: vec![],
+            }),
+            "restricted card type"
+        );
+        assert_eq!(
+            fmt_choice_type(&ChoiceType::CardType {
+                options: vec![],
+                excluded: vec![crate::types::card_type::CoreType::Artifact],
+            }),
+            "restricted card type"
         );
     }
 }

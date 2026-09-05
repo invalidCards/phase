@@ -108,16 +108,47 @@ fn cloud_key_reduces_only_the_chosen_card_type_after_etb_choice() {
     match outcome.final_waiting_for() {
         WaitingFor::NamedChoice {
             choice_type,
+            options,
             source: Some(source),
             ..
         } => {
-            assert!(
-                matches!(choice_type, ChoiceType::CardType { .. }),
-                "Cloud Key ETB must be a CardType choice, got {choice_type:?}"
+            assert_eq!(
+                choice_type,
+                &ChoiceType::card_type_from(vec![
+                    CoreType::Artifact,
+                    CoreType::Creature,
+                    CoreType::Enchantment,
+                    CoreType::Instant,
+                    CoreType::Sorcery,
+                ]),
+                "Cloud Key ETB must preserve its exact card-type domain"
+            );
+            assert_eq!(
+                options,
+                &["Artifact", "Creature", "Enchantment", "Instant", "Sorcery"]
             );
             assert_eq!(source.prompt.identity.reference.object_id, cloud_key);
         }
         other => panic!("expected NamedChoice after Cloud Key ETB, got {other:?}"),
+    }
+
+    let waiting_before_rejection = runner.state().waiting_for.clone();
+    let attributes_before_rejection = runner.state().objects[&cloud_key].chosen_attributes.clone();
+    for illegal_choice in ["Land", "Planeswalker"] {
+        let error = runner
+            .act(GameAction::ChooseOption {
+                choice: illegal_choice.to_string(),
+            })
+            .expect_err("an option outside Cloud Key's printed domain must be rejected");
+        assert!(
+            matches!(error, engine::game::EngineError::InvalidAction(_)),
+            "{illegal_choice} must be an InvalidAction, got {error:?}"
+        );
+        assert_eq!(runner.state().waiting_for, waiting_before_rejection);
+        assert_eq!(
+            runner.state().objects[&cloud_key].chosen_attributes,
+            attributes_before_rejection
+        );
     }
     runner
         .act(GameAction::ChooseOption {
@@ -158,5 +189,110 @@ fn cloud_key_reduces_only_the_chosen_card_type_after_etb_choice() {
     assert_eq!(
         other_generic, 2,
         "a non-chosen-type spell must be unchanged"
+    );
+}
+
+#[test]
+fn two_cloud_keys_bind_their_own_chosen_types() {
+    let Some(db) = load_db() else {
+        return;
+    };
+
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let first_cloud_key = scenario.add_real_card(P0, "Cloud Key", Zone::Hand, db);
+    let second_cloud_key = scenario.add_real_card(P0, "Cloud Key", Zone::Hand, db);
+    let mind_stone = scenario.add_real_card(P0, "Mind Stone", Zone::Hand, db);
+    let cultivate = scenario.add_real_card(P0, "Cultivate", Zone::Hand, db);
+    let mut runner = scenario.build();
+    engine::game::rehydrate_game_from_card_db(runner.state_mut(), db);
+    {
+        let pool = &mut runner.state_mut().players[0].mana_pool;
+        for _ in 0..6 {
+            pool.add(ManaUnit::new(
+                ManaType::Colorless,
+                ObjectId(0),
+                false,
+                vec![],
+            ));
+        }
+    }
+
+    let first = runner.cast(first_cloud_key).resolve();
+    match first.final_waiting_for() {
+        WaitingFor::NamedChoice {
+            source: Some(source),
+            options,
+            ..
+        } => {
+            assert_eq!(source.prompt.identity.reference.object_id, first_cloud_key);
+            assert_eq!(
+                options,
+                &["Artifact", "Creature", "Enchantment", "Instant", "Sorcery"]
+            );
+        }
+        other => panic!("expected first Cloud Key choice, got {other:?}"),
+    }
+    runner
+        .act(GameAction::ChooseOption {
+            choice: "Artifact".to_string(),
+        })
+        .expect("first Cloud Key choice resolves");
+
+    let second = runner.cast(second_cloud_key).resolve();
+    match second.final_waiting_for() {
+        WaitingFor::NamedChoice {
+            source: Some(source),
+            options,
+            ..
+        } => {
+            assert_eq!(source.prompt.identity.reference.object_id, second_cloud_key);
+            assert_eq!(
+                options,
+                &["Artifact", "Creature", "Enchantment", "Instant", "Sorcery"]
+            );
+        }
+        other => panic!("expected second Cloud Key choice, got {other:?}"),
+    }
+    runner
+        .act(GameAction::ChooseOption {
+            choice: "Sorcery".to_string(),
+        })
+        .expect("second Cloud Key choice resolves");
+
+    assert_eq!(
+        runner.state().objects[&first_cloud_key].chosen_card_type(),
+        Some(CoreType::Artifact),
+        "the first source must retain only its Artifact choice"
+    );
+    assert_eq!(
+        runner.state().objects[&second_cloud_key].chosen_card_type(),
+        Some(CoreType::Sorcery),
+        "the second source must retain only its Sorcery choice"
+    );
+
+    let ManaCost::Cost {
+        generic: mind_stone_generic,
+        ..
+    } = engine::game::casting::display_spell_cost(runner.state(), P0, mind_stone)
+        .expect("Mind Stone should have a displayable cost")
+    else {
+        panic!("Mind Stone must have a standard mana cost");
+    };
+    let ManaCost::Cost {
+        generic: cultivate_generic,
+        ..
+    } = engine::game::casting::display_spell_cost(runner.state(), P0, cultivate)
+        .expect("Cultivate should have a displayable cost")
+    else {
+        panic!("Cultivate must have a standard mana cost");
+    };
+    assert_eq!(
+        mind_stone_generic, 1,
+        "only the Artifact Cloud Key discounts Mind Stone"
+    );
+    assert_eq!(
+        cultivate_generic, 1,
+        "only the Sorcery Cloud Key discounts Cultivate"
     );
 }
