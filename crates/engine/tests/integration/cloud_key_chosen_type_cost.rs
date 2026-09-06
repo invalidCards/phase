@@ -351,7 +351,7 @@ fn archon_of_valors_reach_blocks_only_its_chosen_type() {
         .expect("Archon's selected type persists");
     assert!(
         runner.cast(artifact).try_resolve().is_err(),
-        "CR 601.2f: Archon must prohibit casting its chosen Artifact type"
+        "CR 601.3: Archon must prohibit casting its chosen Artifact type"
     );
     runner
         .cast(sorcery)

@@ -1893,8 +1893,10 @@ fn static_reads_chosen_card_type(static_def: &StaticDefinition) -> bool {
 
 /// CR 607.2d: Pair exactly one persisted labeled card-type choice from an
 /// as-enters replacement with distinct static reader items. Bare labeled card
-/// lists (Turnabout, Storage Matrix, Winding Way) have no such reader and stay
-/// labeled; ordinary generic `CardType` choices need no promotion.
+/// lists (Turnabout, Storage Matrix) have no such reader and stay labeled;
+/// cards whose reader sits in a resolution effect rather than an as-enters
+/// replacement (Winding Way) are excluded by the replacement gate instead.
+/// Ordinary generic `CardType` choices need no promotion.
 fn detect_linked_choice_constrained_card_type_static(
     items: &[OracleItemIr],
     relations: &mut Vec<DocumentRelationIr>,
