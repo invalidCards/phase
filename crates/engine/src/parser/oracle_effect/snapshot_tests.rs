@@ -1419,31 +1419,35 @@ fn baleful_mastery_opponent_draw_uses_choose_not_cast_target() {
 }
 
 #[test]
-fn named_choice_parses_enumerated_card_types_as_an_ordered_domain() {
+fn named_choice_keeps_enumerated_card_types_as_source_ordered_labels() {
     let canonical =
         try_parse_named_choice("choose artifact, creature, enchantment, instant, or sorcery");
     assert_eq!(
         canonical,
-        Some(ChoiceType::card_type_from(vec![
-            CoreType::Artifact,
-            CoreType::Creature,
-            CoreType::Enchantment,
-            CoreType::Instant,
-            CoreType::Sorcery,
-        ]))
+        Some(ChoiceType::Labeled {
+            options: vec![
+                "Artifact".to_string(),
+                "Creature".to_string(),
+                "Enchantment".to_string(),
+                "Instant".to_string(),
+                "Sorcery".to_string(),
+            ],
+        })
     );
 
     let reordered =
         try_parse_named_choice("choose sorcery, artifact, instant, creature, or enchantment.");
     assert_eq!(
         reordered,
-        Some(ChoiceType::card_type_from(vec![
-            CoreType::Sorcery,
-            CoreType::Artifact,
-            CoreType::Instant,
-            CoreType::Creature,
-            CoreType::Enchantment,
-        ]))
+        Some(ChoiceType::Labeled {
+            options: vec![
+                "Sorcery".to_string(),
+                "Artifact".to_string(),
+                "Instant".to_string(),
+                "Creature".to_string(),
+                "Enchantment".to_string(),
+            ],
+        })
     );
 
     assert_eq!(

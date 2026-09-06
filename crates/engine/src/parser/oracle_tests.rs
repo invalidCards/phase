@@ -42,6 +42,12 @@ fn constrained_card_type_static_relation_promotes_cloud_key_and_archon() {
                 CoreType::Planeswalker,
             ],
         ),
+        (
+            "Supplemental Type Choice",
+            vec!["Artifact"],
+            "As Supplemental Type Choice enters the battlefield, choose artifact or battle.\nSpells you cast of the chosen type cost {1} less to cast.",
+            vec![CoreType::Artifact, CoreType::Battle],
+        ),
     ];
     for (name, types, oracle, expected) in cases {
         let types = types.into_iter().map(str::to_owned).collect::<Vec<_>>();

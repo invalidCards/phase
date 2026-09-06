@@ -1854,9 +1854,6 @@ fn persisted_labeled_card_type_options(def: &AbilityDefinition) -> Option<Vec<Co
     (!options.is_empty()
         && options
             .iter()
-            .all(|card_type| CoreType::CHOOSABLE_TYPES.contains(card_type))
-        && options
-            .iter()
             .enumerate()
             .all(|(index, card_type)| !options[..index].contains(card_type)))
     .then_some(options)
