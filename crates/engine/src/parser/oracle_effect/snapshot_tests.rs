@@ -1436,7 +1436,7 @@ fn named_choice_keeps_enumerated_card_types_as_source_ordered_labels() {
     );
 
     let reordered =
-        try_parse_named_choice("choose sorcery, artifact, instant, creature, or enchantment.");
+        try_parse_named_choice("choose sorcery, artifact, instant, creature, or enchantment");
     assert_eq!(
         reordered,
         Some(ChoiceType::Labeled {

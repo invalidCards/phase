@@ -314,6 +314,10 @@ fn archon_of_valors_reach_blocks_only_its_chosen_type() {
         ManaType::White,
         ManaType::White,
         ManaType::Green,
+        // Leave {2}{G} after paying Archon's {3}{G}{W}, so the unchosen
+        // Cultivate assertion exercises Archon's casting restriction rather
+        // than failing on mana availability.
+        ManaType::Green,
         ManaType::Colorless,
         ManaType::Colorless,
         ManaType::Colorless,
