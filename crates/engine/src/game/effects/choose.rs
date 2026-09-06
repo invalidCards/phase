@@ -686,8 +686,9 @@ fn compute_options(
         ChoiceType::OddOrEven => to_strings(ODD_OR_EVEN),
         // CR 305.6: The basic land types are Plains, Island, Swamp, Mountain, and Forest.
         ChoiceType::BasicLandType => to_strings(BASIC_LAND_TYPES),
-        ChoiceType::CardType { .. } => choice_type
-            .legal_card_types()
+        // CR 205.2a: exact listed choices preserve printed order; the empty
+        // form delegates to the engine's deliberately narrower generic policy.
+        ChoiceType::CardType { options } => ChoiceType::legal_card_type_options(options)
             .into_iter()
             .map(|card_type| card_type.to_string())
             .collect(),
@@ -1286,15 +1287,16 @@ mod tests {
         }
     }
 
-    // CR 205.2a: Archon of Valor's Reach restricts the card-type choice to
-    // "artifact, enchantment, instant, sorcery, or planeswalker" by excluding
-    // Creature and Land from the offered set.
+    // CR 205.2a: Archon of Valor's Reach uses its printed positive domain.
     #[test]
-    fn choose_card_type_excludes_restricted_types() {
+    fn choose_card_type_explicit_domain_excludes_restricted_types() {
         let mut state = GameState::new_two_player(42);
-        let ability = make_choose_ability(ChoiceType::card_type_excluding(vec![
-            CoreType::Creature,
-            CoreType::Land,
+        let ability = make_choose_ability(ChoiceType::card_type_from(vec![
+            CoreType::Artifact,
+            CoreType::Enchantment,
+            CoreType::Instant,
+            CoreType::Planeswalker,
+            CoreType::Sorcery,
         ]));
         let mut events = Vec::new();
         resolve(&mut state, &ability, &mut events).unwrap();
@@ -1913,7 +1915,7 @@ mod tests {
                 crate::types::zones::Zone::Battlefield,
             ),
         );
-        let mut ability = ResolvedAbility::new(
+        let ability = ResolvedAbility::new(
             Effect::Choose {
                 choice_type: ChoiceType::card_type_from(vec![CoreType::Artifact]),
                 persist: true,
@@ -1925,12 +1927,25 @@ mod tests {
         );
         let mut events = Vec::new();
 
-        assert!(resolve_random_in_chain(
-            &mut state,
-            &mut ability,
-            &mut events
-        ));
-        assert!(!matches!(state.waiting_for, WaitingFor::NamedChoice { .. }));
+        crate::game::effects::resolve_ability_chain(&mut state, &ability, &mut events, 0)
+            .expect("random singleton choice resolves through the production chain");
+        assert!(
+            events.iter().any(|event| {
+                matches!(
+                    event,
+                    GameEvent::EffectResolved {
+                        kind: EffectKind::Choose,
+                        source_id: event_source,
+                        ..
+                    } if *event_source == source_id
+                )
+            }),
+            "the production resolver must publish the choice resolution"
+        );
+        assert!(
+            !matches!(state.waiting_for, WaitingFor::NamedChoice { .. }),
+            "random selection must never request a named choice"
+        );
         assert_eq!(
             state.objects[&source_id].chosen_card_type(),
             Some(CoreType::Artifact)

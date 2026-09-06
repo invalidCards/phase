@@ -296,3 +296,130 @@ fn two_cloud_keys_bind_their_own_chosen_types() {
         "only the Sorcery Cloud Key discounts Cultivate"
     );
 }
+
+#[test]
+fn archon_of_valors_reach_blocks_only_its_chosen_type() {
+    let Some(db) = load_db() else {
+        return;
+    };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let archon = scenario.add_real_card(P0, "Archon of Valor's Reach", Zone::Hand, db);
+    let artifact = scenario.add_real_card(P0, "Mind Stone", Zone::Hand, db);
+    let sorcery = scenario.add_real_card(P0, "Cultivate", Zone::Hand, db);
+    let mut runner = scenario.build();
+    engine::game::rehydrate_game_from_card_db(runner.state_mut(), db);
+    let pool = &mut runner.state_mut().players[0].mana_pool;
+    for mana_type in [
+        ManaType::White,
+        ManaType::White,
+        ManaType::Green,
+        ManaType::Colorless,
+        ManaType::Colorless,
+        ManaType::Colorless,
+        ManaType::Colorless,
+        ManaType::Colorless,
+    ] {
+        pool.add(ManaUnit::new(mana_type, ObjectId(0), false, vec![]));
+    }
+
+    let outcome = runner.cast(archon).resolve();
+    assert!(matches!(
+        outcome.final_waiting_for(),
+        WaitingFor::NamedChoice {
+            choice_type: ChoiceType::CardType { options },
+            options: prompt,
+            ..
+        } if options == &vec![
+            CoreType::Artifact,
+            CoreType::Enchantment,
+            CoreType::Instant,
+            CoreType::Sorcery,
+            CoreType::Planeswalker,
+        ] && prompt == &[
+            "Artifact", "Enchantment", "Instant", "Sorcery", "Planeswalker"
+        ]
+    ));
+    runner
+        .act(GameAction::ChooseOption {
+            choice: "Artifact".to_string(),
+        })
+        .expect("Archon's selected type persists");
+    assert!(
+        runner.cast(artifact).try_resolve().is_err(),
+        "CR 601.2f: Archon must prohibit casting its chosen Artifact type"
+    );
+    runner
+        .cast(sorcery)
+        .try_resolve()
+        .expect("an adjacent unchosen spell type remains castable");
+}
+
+#[test]
+fn stenn_uses_positive_exclusion_domain_and_reduces_only_selected_type() {
+    let Some(db) = load_db() else {
+        return;
+    };
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let stenn = scenario.add_real_card(P0, "Stenn, Paranoid Partisan", Zone::Hand, db);
+    let artifact = scenario.add_real_card(P0, "Mind Stone", Zone::Hand, db);
+    let mut runner = scenario.build();
+    engine::game::rehydrate_game_from_card_db(runner.state_mut(), db);
+    let pool = &mut runner.state_mut().players[0].mana_pool;
+    for mana_type in [ManaType::White, ManaType::Blue] {
+        pool.add(ManaUnit::new(mana_type, ObjectId(0), false, vec![]));
+    }
+
+    let outcome = runner.cast(stenn).resolve();
+    match outcome.final_waiting_for() {
+        WaitingFor::NamedChoice {
+            choice_type,
+            options,
+            ..
+        } => {
+            assert_eq!(
+                choice_type,
+                &ChoiceType::card_type_from(vec![
+                    CoreType::Artifact,
+                    CoreType::Enchantment,
+                    CoreType::Instant,
+                    CoreType::Planeswalker,
+                    CoreType::Sorcery,
+                ])
+            );
+            assert_eq!(
+                options,
+                &[
+                    "Artifact",
+                    "Enchantment",
+                    "Instant",
+                    "Planeswalker",
+                    "Sorcery"
+                ]
+            );
+        }
+        other => panic!("expected Stenn choice, got {other:?}"),
+    }
+    let before = runner.state().objects[&stenn].chosen_attributes.clone();
+    for illegal in ["Creature", "Land"] {
+        assert!(runner
+            .act(GameAction::ChooseOption {
+                choice: illegal.to_string(),
+            })
+            .is_err());
+        assert_eq!(runner.state().objects[&stenn].chosen_attributes, before);
+    }
+    runner
+        .act(GameAction::ChooseOption {
+            choice: "Artifact".to_string(),
+        })
+        .expect("Artifact is in Stenn's exact domain");
+    let ManaCost::Cost { generic, .. } =
+        engine::game::casting::display_spell_cost(runner.state(), P0, artifact)
+            .expect("Mind Stone has a displayable cost")
+    else {
+        panic!("Mind Stone must have a standard mana cost");
+    };
+    assert_eq!(generic, 1, "only Stenn's selected type costs {{1}} less");
+}
