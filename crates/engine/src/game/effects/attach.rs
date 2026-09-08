@@ -1027,9 +1027,11 @@ fn current_attachment_target_ids(state: &GameState, ability: &ResolvedAbility) -
 }
 
 /// Resolve a resolution-local host referent without allowing a just-selected
-/// attachment to fill both roles. Explicit propagated nonattachment targets
-/// take precedence for every dynamic filter; each filter's ledger is only the
-/// fallback when no such target remains.
+/// attachment to fill both roles. `LastCreated` may use any propagated
+/// nonattachment host, because creation chains carry their new token in a
+/// target slot. `LastRevealed` and `LastZoneChanged` may use a propagated host
+/// only when that object belongs to their respective event ledger; otherwise a
+/// prior instruction's unrelated target would leak into this operation.
 fn resolve_dynamic_attach_host_target<'a>(
     state: &GameState,
     ability: &ResolvedAbility,
@@ -1052,6 +1054,14 @@ fn resolve_dynamic_attach_host_target<'a>(
         let TargetRef::Object(id) = target else {
             continue;
         };
+        let target_slot_is_eligible = match filter {
+            TargetFilter::LastCreated => true,
+            TargetFilter::LastRevealed | TargetFilter::LastZoneChanged => dynamic_ids.contains(id),
+            _ => unreachable!("dynamic attachment-host resolution only receives ledger filters"),
+        };
+        if !target_slot_is_eligible {
+            continue;
+        }
         saw_dynamic_candidate = true;
         if !is_attachment(*id) {
             return AttachHostTargetResolution::Found(*id);
@@ -2344,6 +2354,85 @@ mod tests {
         id
     }
 
+    #[derive(Clone, Copy)]
+    enum DynamicHostTokenKind {
+        Creature,
+        ArtifactEquipment,
+    }
+
+    /// Create one real token so `LastCreated` is exercised through its
+    /// production token-resolution path rather than a hand-written ledger.
+    fn create_dynamic_host_token(state: &mut GameState, kind: DynamicHostTokenKind) -> ObjectId {
+        let (name, types, expected_core_type, expected_subtype) = match kind {
+            DynamicHostTokenKind::Creature => (
+                "Ledger Host",
+                vec!["Creature".to_string(), "Germ".to_string()],
+                CoreType::Creature,
+                "Germ",
+            ),
+            DynamicHostTokenKind::ArtifactEquipment => (
+                "Only Ledger Blade",
+                vec!["Artifact".to_string(), "Equipment".to_string()],
+                CoreType::Artifact,
+                "Equipment",
+            ),
+        };
+        let ability = ResolvedAbility::new(
+            Effect::Token {
+                name: name.to_string(),
+                power: crate::types::ability::PtValue::Fixed(0),
+                toughness: crate::types::ability::PtValue::Fixed(0),
+                types,
+                colors: vec![],
+                keywords: vec![],
+                tapped: false,
+                count: QuantityExpr::Fixed { value: 1 },
+                owner: TargetFilter::Controller,
+                attach_to: None,
+                enters_attacking: false,
+                supertypes: vec![],
+                static_abilities: vec![],
+                enter_with_counters: vec![],
+            },
+            vec![],
+            ObjectId(998),
+            PlayerId(0),
+        );
+        let mut events = vec![];
+
+        crate::game::effects::token::resolve(state, &ability, &mut events)
+            .expect("test token creation should resolve");
+
+        let [id] = state.last_created_token_ids.as_slice() else {
+            panic!(
+                "one-token creation must set exactly one LastCreated ledger entry: {:?}",
+                state.last_created_token_ids
+            );
+        };
+        let id = *id;
+        let created_ids: Vec<_> = events
+            .iter()
+            .filter_map(|event| match event {
+                GameEvent::TokenCreated { object_id, .. } => Some(*object_id),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            created_ids,
+            vec![id],
+            "one-token creation must emit TokenCreated for its ledger identity"
+        );
+        let token = &state.objects[&id];
+        assert!(token.is_token);
+        assert!(token.card_types.core_types.contains(&expected_core_type));
+        assert!(token
+            .card_types
+            .subtypes
+            .iter()
+            .any(|subtype| subtype == expected_subtype));
+        id
+    }
+
     fn apply_static(state: &mut GameState, id: ObjectId, mode_name: &str) {
         state.objects.get_mut(&id).unwrap().static_definitions.push(
             StaticDefinition::new(StaticMode::Other(mode_name.to_string()))
@@ -3257,9 +3346,17 @@ mod tests {
         ] {
             let mut state = setup();
             let equipment = spawn_equipment(&mut state, "Ledger Blade", 10);
-            let host = spawn_creature(&mut state, "Ledger Host");
+            let host = match filter {
+                TargetFilter::LastCreated => {
+                    create_dynamic_host_token(&mut state, DynamicHostTokenKind::Creature)
+                }
+                TargetFilter::LastRevealed | TargetFilter::LastZoneChanged => {
+                    spawn_creature(&mut state, "Ledger Host")
+                }
+                _ => unreachable!("dynamic-host table contains only ledger filters"),
+            };
             match filter {
-                TargetFilter::LastCreated => state.last_created_token_ids = vec![equipment, host],
+                TargetFilter::LastCreated => {}
                 TargetFilter::LastRevealed => state.last_revealed_ids = vec![equipment, host],
                 TargetFilter::LastZoneChanged => {
                     state.last_zone_changed_ids = vec![equipment, host]
@@ -3288,21 +3385,45 @@ mod tests {
     }
 
     #[test]
-    fn attach_resolve_prefers_explicit_nonattachment_host_to_dynamic_ledger() {
-        for filter in [
-            TargetFilter::LastCreated,
-            TargetFilter::LastRevealed,
-            TargetFilter::LastZoneChanged,
-        ] {
+    fn attach_resolve_last_created_prefers_explicit_nonattachment_host_to_ledger() {
+        let mut state = setup();
+        let equipment = spawn_equipment(&mut state, "Explicit Blade", 10);
+        let explicit_host = spawn_creature(&mut state, "Explicit Host");
+        create_dynamic_host_token(&mut state, DynamicHostTokenKind::Creature);
+        let ability = ResolvedAbility::new(
+            Effect::Attach {
+                attachment: TargetFilter::ParentTarget,
+                target: TargetFilter::LastCreated,
+            },
+            vec![
+                TargetRef::Object(equipment),
+                TargetRef::Object(explicit_host),
+            ],
+            ObjectId(999),
+            PlayerId(0),
+        );
+        let mut events = vec![];
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert_eq!(
+            state.objects[&equipment].attached_to,
+            Some(AttachTarget::Object(explicit_host)),
+            "LastCreated must preserve an explicit nonattachment host"
+        );
+    }
+
+    #[test]
+    fn attach_resolve_revealed_and_zone_changed_ignore_unrelated_propagated_hosts() {
+        for filter in [TargetFilter::LastRevealed, TargetFilter::LastZoneChanged] {
             let mut state = setup();
-            let equipment = spawn_equipment(&mut state, "Explicit Blade", 10);
-            let explicit_host = spawn_creature(&mut state, "Explicit Host");
+            let equipment = spawn_equipment(&mut state, "Ledger Blade", 10);
+            let unrelated_host = spawn_creature(&mut state, "Unrelated Host");
             let ledger_host = spawn_creature(&mut state, "Ledger Host");
             match filter {
-                TargetFilter::LastCreated => state.last_created_token_ids = vec![ledger_host],
                 TargetFilter::LastRevealed => state.last_revealed_ids = vec![ledger_host],
                 TargetFilter::LastZoneChanged => state.last_zone_changed_ids = vec![ledger_host],
-                _ => unreachable!("dynamic-host table contains only ledger filters"),
+                _ => unreachable!("table contains only revealed and zone-changed filters"),
             }
             let ability = ResolvedAbility::new(
                 Effect::Attach {
@@ -3311,7 +3432,7 @@ mod tests {
                 },
                 vec![
                     TargetRef::Object(equipment),
-                    TargetRef::Object(explicit_host),
+                    TargetRef::Object(unrelated_host),
                 ],
                 ObjectId(999),
                 PlayerId(0),
@@ -3322,46 +3443,141 @@ mod tests {
 
             assert_eq!(
                 state.objects[&equipment].attached_to,
-                Some(AttachTarget::Object(explicit_host)),
-                "{filter:?} must preserve an explicit nonattachment host"
+                Some(AttachTarget::Object(ledger_host)),
+                "{filter:?} must ignore an unrelated propagated host"
             );
         }
     }
 
     #[test]
-    fn attach_resolve_dynamic_hosts_exhausted_by_attachment_is_a_journal_free_noop() {
-        let mut state = setup();
-        let equipment = spawn_equipment(&mut state, "Only Ledger Blade", 10);
-        state.last_zone_changed_ids = vec![equipment];
-        let ability = ResolvedAbility::new(
-            Effect::Attach {
-                attachment: TargetFilter::ParentTarget,
-                target: TargetFilter::LastZoneChanged,
-            },
-            vec![TargetRef::Object(equipment)],
-            ObjectId(999),
-            PlayerId(0),
-        );
-        let journal_len_before = state.resolved_rules_journal.entries().len();
-        let mut events = vec![];
+    fn attach_resolve_revealed_and_zone_changed_prefer_matching_propagated_hosts() {
+        for filter in [TargetFilter::LastRevealed, TargetFilter::LastZoneChanged] {
+            let mut state = setup();
+            let equipment = spawn_equipment(&mut state, "Ledger Blade", 10);
+            let propagated_host = spawn_creature(&mut state, "Propagated Host");
+            let later_ledger_host = spawn_creature(&mut state, "Later Ledger Host");
+            match filter {
+                TargetFilter::LastRevealed => {
+                    state.last_revealed_ids = vec![propagated_host, later_ledger_host]
+                }
+                TargetFilter::LastZoneChanged => {
+                    state.last_zone_changed_ids = vec![propagated_host, later_ledger_host]
+                }
+                _ => unreachable!("table contains only revealed and zone-changed filters"),
+            }
+            let ability = ResolvedAbility::new(
+                Effect::Attach {
+                    attachment: TargetFilter::ParentTarget,
+                    target: filter.clone(),
+                },
+                vec![
+                    TargetRef::Object(equipment),
+                    TargetRef::Object(propagated_host),
+                ],
+                ObjectId(999),
+                PlayerId(0),
+            );
+            let mut events = vec![];
 
-        resolve(&mut state, &ability, &mut events).unwrap();
+            resolve(&mut state, &ability, &mut events).unwrap();
 
-        assert!(state.objects[&equipment].attached_to.is_none());
-        assert!(state.objects[&equipment].attachments.is_empty());
-        assert_eq!(
-            state.resolved_rules_journal.entries().len(),
-            journal_len_before,
-            "the dynamic no-op must not write an attachment command"
-        );
-        assert_eq!(
-            events,
-            vec![GameEvent::EffectResolved {
-                kind: EffectKind::Attach,
-                source_id: ObjectId(999),
-                subject: None,
-            }]
-        );
+            assert_eq!(
+                state.objects[&equipment].attached_to,
+                Some(AttachTarget::Object(propagated_host)),
+                "{filter:?} must preserve its matching propagated host precedence"
+            );
+        }
+    }
+
+    #[test]
+    fn attach_resolve_revealed_and_zone_changed_without_eligible_candidates_are_errors() {
+        for filter in [TargetFilter::LastRevealed, TargetFilter::LastZoneChanged] {
+            let mut state = setup();
+            let equipment = spawn_equipment(&mut state, "Unhosted Blade", 10);
+            let unrelated_host = spawn_creature(&mut state, "Unrelated Host");
+            let ability = ResolvedAbility::new(
+                Effect::Attach {
+                    attachment: TargetFilter::ParentTarget,
+                    target: filter.clone(),
+                },
+                vec![
+                    TargetRef::Object(equipment),
+                    TargetRef::Object(unrelated_host),
+                ],
+                ObjectId(999),
+                PlayerId(0),
+            );
+            let journal_len_before = state.resolved_rules_journal.entries().len();
+            let mut events = vec![];
+
+            assert!(matches!(
+                resolve(&mut state, &ability, &mut events),
+                Err(EffectError::MissingParam(message)) if message == "No target for Attach"
+            ));
+            assert!(state.objects[&equipment].attached_to.is_none());
+            assert!(state.objects[&unrelated_host].attachments.is_empty());
+            assert_eq!(
+                state.resolved_rules_journal.entries().len(),
+                journal_len_before
+            );
+            assert!(events.is_empty());
+        }
+    }
+
+    #[test]
+    fn attach_resolve_dynamic_hosts_exhausted_by_attachment_are_journal_free_noops() {
+        for filter in [
+            TargetFilter::LastCreated,
+            TargetFilter::LastRevealed,
+            TargetFilter::LastZoneChanged,
+        ] {
+            let mut state = setup();
+            let equipment = match filter {
+                TargetFilter::LastCreated => {
+                    create_dynamic_host_token(&mut state, DynamicHostTokenKind::ArtifactEquipment)
+                }
+                TargetFilter::LastRevealed | TargetFilter::LastZoneChanged => {
+                    spawn_equipment(&mut state, "Only Ledger Blade", 10)
+                }
+                _ => unreachable!("dynamic-host table contains only ledger filters"),
+            };
+            match filter {
+                TargetFilter::LastCreated => {}
+                TargetFilter::LastRevealed => state.last_revealed_ids = vec![equipment],
+                TargetFilter::LastZoneChanged => state.last_zone_changed_ids = vec![equipment],
+                _ => unreachable!("dynamic-host table contains only ledger filters"),
+            }
+            let ability = ResolvedAbility::new(
+                Effect::Attach {
+                    attachment: TargetFilter::ParentTarget,
+                    target: filter.clone(),
+                },
+                vec![TargetRef::Object(equipment)],
+                ObjectId(999),
+                PlayerId(0),
+            );
+            let journal_len_before = state.resolved_rules_journal.entries().len();
+            let mut events = vec![];
+
+            resolve(&mut state, &ability, &mut events).unwrap();
+
+            assert!(state.objects[&equipment].attached_to.is_none());
+            assert!(state.objects[&equipment].attachments.is_empty());
+            assert_eq!(
+                state.resolved_rules_journal.entries().len(),
+                journal_len_before,
+                "{filter:?} dynamic no-op must not write an attachment command"
+            );
+            assert_eq!(
+                events,
+                vec![GameEvent::EffectResolved {
+                    kind: EffectKind::Attach,
+                    source_id: ObjectId(999),
+                    subject: None,
+                }],
+                "{filter:?} must emit only its completed Attach effect"
+            );
+        }
     }
 
     #[test]
