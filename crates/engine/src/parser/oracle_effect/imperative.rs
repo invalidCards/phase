@@ -6637,6 +6637,13 @@ fn parse_attach_recipient<'a>(text: &'a str, ctx: &mut ParseContext) -> (TargetF
         if parse_gendered_attach_self_recipient(lower.trim()).is_ok() {
             return (TargetFilter::SelfRef, &trimmed[lower.len()..]);
         }
+        // CR 608.2c: a bare recipient "it" immediately following token
+        // creation names that created token (Grip of Phyresis). This deliberately
+        // precedes the ordinary source/parent-target fallback, but does not
+        // affect demonstratives or explicitly targeted recipients.
+        if parse_neuter_attach_self_recipient(lower.trim()).is_ok() && ctx.token_created_in_chain {
+            return (TargetFilter::LastCreated, &trimmed[lower.len()..]);
+        }
         if parse_neuter_attach_self_recipient(lower.trim()).is_ok()
             && attach_neuter_recipient_resolves_via_subject(ctx)
         {
@@ -16339,6 +16346,37 @@ mod tests {
             panic!("{input}: expected Attach, got {result:?}");
         };
         assert_eq!(target, TargetFilter::ParentTarget);
+    }
+
+    #[test]
+    fn parse_attach_recipient_it_binds_last_created_before_parent_target() {
+        let input = "attach up to one target Equipment you control to it";
+        let lower = input.to_lowercase();
+        let mut ctx = ParseContext {
+            parent_target_available: true,
+            token_created_in_chain: true,
+            ..Default::default()
+        };
+        let result = parse_utility_imperative_ast(input, &lower, &mut ctx);
+        let Some(UtilityImperativeAst::Attach { target, .. }) = result else {
+            panic!("{input}: expected Attach, got {result:?}");
+        };
+        assert_eq!(target, TargetFilter::LastCreated);
+    }
+
+    #[test]
+    fn parse_attach_recipient_explicit_target_ignores_created_token_context() {
+        let input = "attach this Equipment to target creature";
+        let lower = input.to_lowercase();
+        let mut ctx = ParseContext {
+            token_created_in_chain: true,
+            ..Default::default()
+        };
+        let result = parse_utility_imperative_ast(input, &lower, &mut ctx);
+        let Some(UtilityImperativeAst::Attach { target, .. }) = result else {
+            panic!("{input}: expected Attach, got {result:?}");
+        };
+        assert_eq!(target, TargetFilter::Typed(TypedFilter::creature()));
     }
 
     #[test]

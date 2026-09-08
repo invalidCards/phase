@@ -3,7 +3,7 @@ use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_till, take_until};
 use nom::character::complete::multispace1;
 use nom::combinator::{all_consuming, eof, map, map_opt, opt, rest, value};
-use nom::sequence::{preceded, terminated};
+use nom::sequence::{pair, preceded, terminated};
 use nom::Parser;
 
 use super::super::oracle_nom::bridge::nom_on_lower;
@@ -2539,10 +2539,13 @@ fn starts_attach_equipment_was_attached_clause(text: &str) -> bool {
 fn parse_typed_attachment_clause_start(input: &str) -> OracleResult<'_, ()> {
     let (input, _) = tag("attach ").parse(input)?;
     let (input, _) = alt((
-        tag("~"),
-        (
-            alt((tag("this "), tag("that "))),
-            alt((tag("equipment"), tag("aura"), tag("fortification"))),
+        value((), tag("~")),
+        value(
+            (),
+            pair(
+                alt((tag("this "), tag("that "))),
+                alt((tag("equipment"), tag("aura"), tag("fortification"))),
+            ),
         ),
     ))
     .parse(input)?;
