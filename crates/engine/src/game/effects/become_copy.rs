@@ -1,9 +1,10 @@
 use crate::game::filter::{matches_target_filter, FilterContext};
 use crate::game::game_object::DisplaySource;
-use crate::game::layers::compute_current_copiable_values;
+use crate::game::layers::{compute_current_copiable_values, subtype_matches_core_types};
+use crate::game::printed_cards::ensure_keyword_triggers_for_copiable_values;
 use crate::types::ability::{
     ContinuousModification, CopiableValues, CopyRecipient, Duration, Effect, EffectError,
-    EffectKind, ResolvedAbility, TargetFilter, TargetRef,
+    EffectKind, ResolvedAbility, StaticDefinition, TargetFilter, TargetRef,
 };
 use crate::types::card::{PrintedCardRef, PrintedLoyalty, TokenImageRef};
 use crate::types::events::GameEvent;
@@ -178,13 +179,30 @@ pub(crate) fn apply_precomputed_copy_values(
             )
         });
 
+    // CR 707.9a + CR 707.9b: Ability grants and characteristic modifications
+    // made during copying become copiable values. The layer pipeline used to
+    // install these riders after `CopyValues`; that realizes the first copy
+    // correctly, but a later copy snapshots only the unmodified source values.
+    // Fold the supported permanent-copy exception vocabulary into the one
+    // `CopyValues` payload instead. This is deliberately all-or-nothing: an
+    // unfamiliar modification keeps the historical layered representation,
+    // rather than making a partial snapshot with silently different semantics.
+    let folded = fold_admitted_copy_exceptions_into_values(
+        &mut values,
+        state.objects.get(&source_id),
+        &layered_mods,
+        &state.all_creature_types,
+    );
+
     let mut modifications = vec![ContinuousModification::CopyValues {
         values: Box::new(values),
         display_source,
         printed_ref,
         token_image_ref,
     }];
-    modifications.extend(layered_mods);
+    if !folded {
+        modifications.extend(layered_mods);
+    }
 
     let recipient = ObjectIncarnationRef::from_object(
         state
@@ -285,6 +303,262 @@ pub(crate) fn apply_precomputed_copy_values(
     });
 
     Ok(())
+}
+
+/// Fold the permanent `BecomeCopy` exception vocabulary into `values`.
+///
+/// CR 707.9a + CR 707.9b: Ability grants and characteristic modifications made
+/// during copying become copiable values. This helper has a closed admission
+/// set on purpose: callers must retain the legacy layer sequence for any shape
+/// it cannot model completely.
+fn fold_admitted_copy_exceptions_into_values(
+    values: &mut CopiableValues,
+    source: Option<&crate::game::game_object::GameObject>,
+    modifications: &[ContinuousModification],
+    all_creature_types: &[String],
+) -> bool {
+    if !modifications
+        .iter()
+        .all(is_snapshot_fold_admitted_modification)
+    {
+        return false;
+    }
+
+    let overrides = CopyExceptionOverrides::from_modifications(modifications);
+    let Some(pruned_statics) = prune_overridden_cdas(&values.static_definitions, overrides) else {
+        // An unknown CDA shape must never cause us to discard a source's
+        // characteristic-defining ability.  Leave every rider layered instead.
+        return false;
+    };
+    values.static_definitions = std::sync::Arc::new(pruned_statics);
+
+    for modification in modifications {
+        match modification {
+            ContinuousModification::AddColor { color } => {
+                if !values.color.contains(color) {
+                    values.color.push(*color);
+                }
+            }
+            ContinuousModification::AddKeyword { keyword } => {
+                if keyword.instances_must_coexist() {
+                    values.keywords.push(keyword.clone());
+                } else if keyword.overrides_same_kind_on_grant() {
+                    values.keywords.retain(|existing| {
+                        std::mem::discriminant(existing) != std::mem::discriminant(keyword)
+                    });
+                    values.keywords.push(keyword.clone());
+                } else if !values.keywords.contains(keyword) {
+                    values.keywords.push(keyword.clone());
+                }
+            }
+            ContinuousModification::AddSubtype { subtype } => {
+                if !values.card_types.subtypes.contains(subtype) {
+                    values.card_types.subtypes.push(subtype.clone());
+                }
+            }
+            ContinuousModification::AddSupertype { supertype } => {
+                if !values.card_types.supertypes.contains(supertype) {
+                    values.card_types.supertypes.push(*supertype);
+                }
+            }
+            ContinuousModification::AddType { core_type } => {
+                if !values.card_types.core_types.contains(core_type) {
+                    values.card_types.core_types.push(*core_type);
+                }
+            }
+            ContinuousModification::GrantAbility { definition } => {
+                let abilities = std::sync::Arc::make_mut(&mut values.abilities);
+                if !abilities.contains(definition.as_ref()) {
+                    abilities.push(*definition.clone());
+                }
+            }
+            ContinuousModification::GrantStaticAbility { definition } => {
+                let statics = std::sync::Arc::make_mut(&mut values.static_definitions);
+                if !statics.contains(definition.as_ref()) {
+                    // This is a copiable static definition, not an outer
+                    // layer-6 grant.  Preserve the inner definition verbatim.
+                    statics.push(*definition.clone());
+                }
+            }
+            ContinuousModification::GrantTrigger { trigger } => {
+                let triggers = std::sync::Arc::make_mut(&mut values.trigger_definitions);
+                if !triggers.contains(trigger.as_ref()) {
+                    triggers.push(*trigger.clone());
+                }
+            }
+            ContinuousModification::RemoveSupertype { supertype } => {
+                values
+                    .card_types
+                    .supertypes
+                    .retain(|existing| existing != supertype);
+            }
+            ContinuousModification::RetainAllOtherAbilitiesFromSource => {
+                if let Some(source) = source {
+                    let abilities = std::sync::Arc::make_mut(&mut values.abilities);
+                    for ability in source.base_abilities.iter() {
+                        if !abilities.contains(ability) {
+                            abilities.push(ability.clone());
+                        }
+                    }
+                    let triggers = std::sync::Arc::make_mut(&mut values.trigger_definitions);
+                    for trigger in source.base_trigger_definitions.iter() {
+                        if !triggers.contains(trigger) {
+                            triggers.push(trigger.clone());
+                        }
+                    }
+                    let statics = std::sync::Arc::make_mut(&mut values.static_definitions);
+                    for static_definition in source.base_static_definitions.iter() {
+                        if !statics.contains(static_definition) {
+                            statics.push(static_definition.clone());
+                        }
+                    }
+                    for keyword in &source.base_keywords {
+                        if !values.keywords.contains(keyword) {
+                            values.keywords.push(keyword.clone());
+                        }
+                    }
+                }
+            }
+            ContinuousModification::RetainPrintedAbilityFromSource {
+                source_ability_index,
+            } => {
+                if let Some(ability) = source
+                    .and_then(|source| source.base_abilities.get(*source_ability_index).cloned())
+                {
+                    let abilities = std::sync::Arc::make_mut(&mut values.abilities);
+                    if !abilities.contains(&ability) {
+                        abilities.push(ability);
+                    }
+                }
+            }
+            ContinuousModification::RetainPrintedTriggerFromSource {
+                source_trigger_index,
+            } => {
+                if let Some(trigger) = source.and_then(|source| {
+                    source
+                        .base_trigger_definitions
+                        .get(*source_trigger_index)
+                        .cloned()
+                }) {
+                    let triggers = std::sync::Arc::make_mut(&mut values.trigger_definitions);
+                    if !triggers.contains(&trigger) {
+                        triggers.push(trigger);
+                    }
+                }
+            }
+            ContinuousModification::SetCardTypes { core_types } => {
+                values.card_types.core_types = core_types.clone();
+                values.card_types.subtypes.retain(|subtype| {
+                    subtype_matches_core_types(subtype, core_types, all_creature_types)
+                });
+            }
+            ContinuousModification::SetName { name } => {
+                values.name = name.clone();
+                values.name_origin = crate::types::ability::CopiedNameOrigin::Exception;
+            }
+            ContinuousModification::SetPower { value } => values.power = Some(*value),
+            ContinuousModification::SetToughness { value } => values.toughness = Some(*value),
+            // The admission predicate is exhaustive.  Keeping this arm makes
+            // any future variant addition a compiler-audited decision here.
+            _ => unreachable!("only admitted copy exception modifications are folded"),
+        }
+    }
+
+    ensure_keyword_triggers_for_copiable_values(values);
+    true
+}
+
+fn is_snapshot_fold_admitted_modification(modification: &ContinuousModification) -> bool {
+    matches!(
+        modification,
+        ContinuousModification::AddColor { .. }
+            | ContinuousModification::AddKeyword { .. }
+            | ContinuousModification::AddSubtype { .. }
+            | ContinuousModification::AddSupertype { .. }
+            | ContinuousModification::AddType { .. }
+            | ContinuousModification::GrantAbility { .. }
+            | ContinuousModification::GrantStaticAbility { .. }
+            | ContinuousModification::GrantTrigger { .. }
+            | ContinuousModification::RemoveSupertype { .. }
+            | ContinuousModification::RetainAllOtherAbilitiesFromSource
+            | ContinuousModification::RetainPrintedAbilityFromSource { .. }
+            | ContinuousModification::RetainPrintedTriggerFromSource { .. }
+            | ContinuousModification::SetCardTypes { .. }
+            | ContinuousModification::SetName { .. }
+            | ContinuousModification::SetPower { .. }
+            | ContinuousModification::SetToughness { .. }
+    )
+}
+
+#[derive(Clone, Copy, Default)]
+struct CopyExceptionOverrides {
+    card_types: bool,
+    power: bool,
+    toughness: bool,
+}
+
+impl CopyExceptionOverrides {
+    fn from_modifications(modifications: &[ContinuousModification]) -> Self {
+        let mut overrides = Self::default();
+        for modification in modifications {
+            match modification {
+                ContinuousModification::SetCardTypes { .. } => overrides.card_types = true,
+                ContinuousModification::SetPower { .. } => overrides.power = true,
+                ContinuousModification::SetToughness { .. } => overrides.toughness = true,
+                _ => {}
+            }
+        }
+        overrides
+    }
+}
+
+/// Returns `None` when a CDA shape is not one this snapshot fold can classify.
+///
+/// CR 707.9d: a copy exception does not copy a source CDA that defines a
+/// characteristic the exception overrides.  We classify the small, typed CDA
+/// vocabulary presently produced by the card database; future shapes take the
+/// all-or-nothing legacy path instead of risking an over-broad deletion.
+fn prune_overridden_cdas(
+    definitions: &std::sync::Arc<Vec<StaticDefinition>>,
+    overrides: CopyExceptionOverrides,
+) -> Option<Vec<StaticDefinition>> {
+    let mut retained = Vec::with_capacity(definitions.len());
+    for definition in definitions.iter() {
+        if !definition.characteristic_defining {
+            retained.push(definition.clone());
+            continue;
+        }
+        let axes = cda_defined_axes(definition)?;
+        let overridden = (axes.card_types && overrides.card_types)
+            || (axes.power && overrides.power)
+            || (axes.toughness && overrides.toughness);
+        if !overridden {
+            retained.push(definition.clone());
+        }
+    }
+    Some(retained)
+}
+
+/// A CDA definition is only safely removable as a whole when every one of its
+/// modifications is in the known characteristic-defining vocabulary.  Fixed
+/// P/T pair definitions report both axes, so either explicit P/T exception
+/// supersedes that definition's corresponding characteristic.
+fn cda_defined_axes(definition: &StaticDefinition) -> Option<CopyExceptionOverrides> {
+    let mut axes = CopyExceptionOverrides::default();
+    for modification in &definition.modifications {
+        match modification {
+            ContinuousModification::AddAllCreatureTypes => axes.card_types = true,
+            ContinuousModification::SetDynamicPower { .. }
+            | ContinuousModification::SetPower { .. } => axes.power = true,
+            ContinuousModification::SetDynamicToughness { .. }
+            | ContinuousModification::SetToughness { .. } => axes.toughness = true,
+            // Color CDAs are known and never overridden by the admitted
+            // additive-color exception, so retain the definition.
+            ContinuousModification::SetColor { .. } => {}
+            _ => return None,
+        }
+    }
+    Some(axes)
 }
 
 fn apply_copy_values_to_recipients(
@@ -1834,6 +2108,125 @@ mod tests {
                 },
             ),
             "LegendRuleDoesntApply static must be retained on the copy"
+        );
+    }
+
+    /// CR 707.9b + CR 707.9d: Machine God's Effigy's `SetCardTypes` copy
+    /// exception provides Artifact as the copied card-type set, so a donor's
+    /// type-defining Changeling CDA is not copied. A later Copy Artifact copy
+    /// must snapshot that pruned copiable-value set rather than restore the
+    /// donor's CDA or its creature subtypes.
+    #[test]
+    fn machine_gods_effigy_type_replacement_prunes_changeling_cda_for_later_copies() {
+        let mut state = GameState::new_two_player(42);
+        state.all_creature_types = vec!["Dragon".to_string(), "Elf".to_string()];
+
+        let donor = create_creature(&mut state, 1, PlayerId(0), "Changeling Donor", 2, 2);
+        let changeling_cda = StaticDefinition::continuous()
+            .affected(TargetFilter::SelfRef)
+            .modifications(vec![ContinuousModification::AddAllCreatureTypes])
+            .cda();
+        state
+            .objects
+            .get_mut(&donor)
+            .unwrap()
+            .base_static_definitions = Arc::new(vec![changeling_cda]);
+        state.layers_dirty.mark_full();
+        evaluate_layers(&mut state);
+        assert!(
+            state.objects[&donor]
+                .card_types
+                .subtypes
+                .contains(&"Dragon".to_string()),
+            "reach guard: the donor's characteristic-defining Changeling static must apply"
+        );
+
+        let effigy = create_creature(&mut state, 2, PlayerId(0), "Machine God's Effigy", 0, 0);
+        let effigy_copy = ResolvedAbility::new(
+            Effect::BecomeCopy {
+                recipient: crate::types::ability::CopyRecipient::Source,
+                target: TargetFilter::Any,
+                duration: None,
+                mana_value_limit: None,
+                additional_modifications: vec![ContinuousModification::SetCardTypes {
+                    core_types: vec![CoreType::Artifact],
+                }],
+            },
+            vec![TargetRef::Object(donor)],
+            effigy,
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+        resolve(&mut state, &effigy_copy, &mut events).unwrap();
+        evaluate_layers(&mut state);
+
+        let copied_effigy = &state.objects[&effigy];
+        assert_eq!(
+            copied_effigy.card_types.core_types,
+            vec![CoreType::Artifact]
+        );
+        assert!(
+            !copied_effigy
+                .card_types
+                .subtypes
+                .contains(&"Dragon".to_string()),
+            "the noncreature Artifact copy must not retain a creature subtype from the donor CDA"
+        );
+        assert!(
+            !copied_effigy
+                .static_definitions
+                .iter_all()
+                .any(|definition| definition.characteristic_defining),
+            "CR 707.9d: the type-defining donor CDA must be absent from Effigy's copiable values"
+        );
+
+        let copy_artifact = create_creature(&mut state, 3, PlayerId(0), "Copy Artifact", 0, 0);
+        let copy_artifact_copy = ResolvedAbility::new(
+            Effect::BecomeCopy {
+                recipient: crate::types::ability::CopyRecipient::Source,
+                target: TargetFilter::Any,
+                duration: None,
+                mana_value_limit: None,
+                additional_modifications: vec![ContinuousModification::AddType {
+                    core_type: CoreType::Enchantment,
+                }],
+            },
+            vec![TargetRef::Object(effigy)],
+            copy_artifact,
+            PlayerId(0),
+        );
+        resolve(&mut state, &copy_artifact_copy, &mut events).unwrap();
+        evaluate_layers(&mut state);
+
+        let copied_artifact = &state.objects[&copy_artifact];
+        assert!(copied_artifact
+            .card_types
+            .core_types
+            .contains(&CoreType::Artifact));
+        assert!(copied_artifact
+            .card_types
+            .core_types
+            .contains(&CoreType::Enchantment));
+        assert!(
+            !copied_artifact
+                .card_types
+                .core_types
+                .contains(&CoreType::Creature),
+            "a later Copy Artifact copy must not regain Creature"
+        );
+        assert!(
+            !copied_artifact
+                .card_types
+                .subtypes
+                .contains(&"Dragon".to_string()),
+            "a later Copy Artifact copy must not regain the donor's creature subtype"
+        );
+        assert!(
+            !copied_artifact
+                .static_definitions
+                .iter_all()
+                .any(|definition| definition.characteristic_defining),
+            "a later Copy Artifact copy must not regain the pruned donor CDA"
         );
     }
 
