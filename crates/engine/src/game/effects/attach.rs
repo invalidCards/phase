@@ -90,6 +90,15 @@ enum AttachPromptOutcome {
     Paused,
 }
 
+/// The host role either resolved, was absent, or was exhausted solely because
+/// every dynamic candidate is also an attachment role in this operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AttachHostTargetResolution {
+    Found(ObjectId),
+    DynamicCandidatesExhausted,
+    Missing,
+}
+
 /// CR 701.3a + CR 701.3b: Attach — to place an Aura, Equipment, or Fortification on another object or player.
 pub fn resolve(
     state: &mut GameState,
@@ -189,8 +198,33 @@ fn resolve_bound_attachment_operation(
             "No attachment for Attach".to_string(),
         ));
     }
-    let target_id = resolve_attach_target(state, ability, target_filter, &mut target_slots)
-        .ok_or_else(|| EffectError::MissingParam("No target for Attach".to_string()))?;
+    let target_id = match resolve_attach_target(
+        state,
+        ability,
+        target_filter,
+        &attachment_ids,
+        &mut target_slots,
+    ) {
+        AttachHostTargetResolution::Found(target_id) => target_id,
+        // CR 609.3 + CR 701.3b: Once every dynamic host candidate is excluded
+        // because it is an attachment in this same operation, the effect does
+        // as much as possible: its attempted attachment does nothing. Finish
+        // before graph or journal mutation, while an unavailable non-dynamic
+        // host remains a resolver error below.
+        AttachHostTargetResolution::DynamicCandidatesExhausted => {
+            events.push(GameEvent::EffectResolved {
+                kind: EffectKind::Attach,
+                source_id,
+                subject: None,
+            });
+            return Ok(AttachResolutionOutcome::Completed);
+        }
+        AttachHostTargetResolution::Missing => {
+            return Err(EffectError::MissingParam(
+                "No target for Attach".to_string(),
+            ));
+        }
+    };
 
     for (index, attachment_id) in attachment_ids.iter().copied().enumerate() {
         // CR 303.4j: If an effect attempts to attach an Aura on the battlefield to an
@@ -931,22 +965,27 @@ fn resolve_attach_target<'a>(
     state: &GameState,
     ability: &ResolvedAbility,
     filter: &TargetFilter,
+    attachment_ids: &[ObjectId],
     target_slots: &mut impl Iterator<Item = &'a TargetRef>,
-) -> Option<ObjectId> {
+) -> AttachHostTargetResolution {
     if let Some(host) = ability.attach_host_target() {
         if !host.is_current(state) {
-            return None;
+            return AttachHostTargetResolution::Missing;
         }
         if matches!(filter, TargetFilter::ParentTarget) {
-            return Some(host.object_id);
+            return AttachHostTargetResolution::Found(host.object_id);
         }
         let ctx = FilterContext::from_ability(ability);
         let effective = crate::game::effects::resolved_object_filter(ability, filter);
         return matches_target_filter(state, host.object_id, &effective, &ctx)
-            .then_some(host.object_id);
+            .then_some(host.object_id)
+            .map_or(
+                AttachHostTargetResolution::Missing,
+                AttachHostTargetResolution::Found,
+            );
     }
 
-    match filter {
+    let target = match filter {
         TargetFilter::ParentTarget => {
             let attachment_ids = current_attachment_target_ids(state, ability);
             ability
@@ -959,10 +998,20 @@ fn resolve_attach_target<'a>(
                 .or_else(|| resolve_parent_target_host_from_trigger(state))
         }
         TargetFilter::LastCreated | TargetFilter::LastRevealed | TargetFilter::LastZoneChanged => {
-            resolve_dynamic_attach_host_target(state, ability, filter, target_slots)
+            return resolve_dynamic_attach_host_target(
+                state,
+                ability,
+                filter,
+                attachment_ids,
+                target_slots,
+            );
         }
         _ => resolve_object_filter(state, ability, filter, target_slots),
-    }
+    };
+    target.map_or(
+        AttachHostTargetResolution::Missing,
+        AttachHostTargetResolution::Found,
+    )
 }
 
 /// CR 400.7: Return attachment role ids only while their pinned incarnations
@@ -978,37 +1027,49 @@ fn current_attachment_target_ids(state: &GameState, ability: &ResolvedAbility) -
 }
 
 /// Resolve a resolution-local host referent without allowing a just-selected
-/// attachment to fill both roles. Explicit `LastCreated` targets retain the
-/// established parent-chain precedence; the other two dynamic filters require
-/// that an explicit target still belongs to their respective ledgers.
+/// attachment to fill both roles. Explicit propagated nonattachment targets
+/// take precedence for every dynamic filter; each filter's ledger is only the
+/// fallback when no such target remains.
 fn resolve_dynamic_attach_host_target<'a>(
     state: &GameState,
     ability: &ResolvedAbility,
     filter: &TargetFilter,
+    attachment_ids: &[ObjectId],
     target_slots: &mut impl Iterator<Item = &'a TargetRef>,
-) -> Option<ObjectId> {
-    let attachment_ids = current_attachment_target_ids(state, ability);
+) -> AttachHostTargetResolution {
+    let role_bound_attachment_ids = current_attachment_target_ids(state, ability);
     let dynamic_ids = match filter {
         TargetFilter::LastCreated => &state.last_created_token_ids,
         TargetFilter::LastRevealed => &state.last_revealed_ids,
         TargetFilter::LastZoneChanged => &state.last_zone_changed_ids,
         _ => unreachable!("dynamic attachment-host resolution only receives ledger filters"),
     };
-    let explicit_host = target_slots.find_map(|target| match target {
-        TargetRef::Object(id)
-            if !attachment_ids.contains(id)
-                && (matches!(filter, TargetFilter::LastCreated) || dynamic_ids.contains(id)) =>
-        {
-            Some(*id)
+    let is_attachment =
+        |id: ObjectId| attachment_ids.contains(&id) || role_bound_attachment_ids.contains(&id);
+
+    let mut saw_dynamic_candidate = false;
+    for target in target_slots {
+        let TargetRef::Object(id) = target else {
+            continue;
+        };
+        saw_dynamic_candidate = true;
+        if !is_attachment(*id) {
+            return AttachHostTargetResolution::Found(*id);
         }
-        TargetRef::Object(_) | TargetRef::Player(_) => None,
-    });
-    explicit_host.or_else(|| {
-        dynamic_ids
-            .iter()
-            .copied()
-            .find(|id| !attachment_ids.contains(id))
-    })
+    }
+
+    for &id in dynamic_ids {
+        saw_dynamic_candidate = true;
+        if !is_attachment(id) {
+            return AttachHostTargetResolution::Found(id);
+        }
+    }
+
+    if saw_dynamic_candidate {
+        AttachHostTargetResolution::DynamicCandidatesExhausted
+    } else {
+        AttachHostTargetResolution::Missing
+    }
 }
 
 fn resolve_parent_target_host_from_trigger(state: &GameState) -> Option<ObjectId> {
@@ -3185,6 +3246,144 @@ mod tests {
             state.objects.get(&equipment).unwrap().attached_to,
             Some(AttachTarget::Object(host))
         );
+    }
+
+    #[test]
+    fn attach_resolve_excludes_operation_attachment_from_each_dynamic_host_ledger() {
+        for filter in [
+            TargetFilter::LastCreated,
+            TargetFilter::LastRevealed,
+            TargetFilter::LastZoneChanged,
+        ] {
+            let mut state = setup();
+            let equipment = spawn_equipment(&mut state, "Ledger Blade", 10);
+            let host = spawn_creature(&mut state, "Ledger Host");
+            match filter {
+                TargetFilter::LastCreated => state.last_created_token_ids = vec![equipment, host],
+                TargetFilter::LastRevealed => state.last_revealed_ids = vec![equipment, host],
+                TargetFilter::LastZoneChanged => {
+                    state.last_zone_changed_ids = vec![equipment, host]
+                }
+                _ => unreachable!("dynamic-host table contains only ledger filters"),
+            }
+            let ability = ResolvedAbility::new(
+                Effect::Attach {
+                    attachment: TargetFilter::ParentTarget,
+                    target: filter.clone(),
+                },
+                vec![TargetRef::Object(equipment)],
+                ObjectId(999),
+                PlayerId(0),
+            );
+            let mut events = vec![];
+
+            resolve(&mut state, &ability, &mut events).unwrap();
+
+            assert_eq!(
+                state.objects[&equipment].attached_to,
+                Some(AttachTarget::Object(host)),
+                "{filter:?} must skip its operation-resolved attachment"
+            );
+        }
+    }
+
+    #[test]
+    fn attach_resolve_prefers_explicit_nonattachment_host_to_dynamic_ledger() {
+        for filter in [
+            TargetFilter::LastCreated,
+            TargetFilter::LastRevealed,
+            TargetFilter::LastZoneChanged,
+        ] {
+            let mut state = setup();
+            let equipment = spawn_equipment(&mut state, "Explicit Blade", 10);
+            let explicit_host = spawn_creature(&mut state, "Explicit Host");
+            let ledger_host = spawn_creature(&mut state, "Ledger Host");
+            match filter {
+                TargetFilter::LastCreated => state.last_created_token_ids = vec![ledger_host],
+                TargetFilter::LastRevealed => state.last_revealed_ids = vec![ledger_host],
+                TargetFilter::LastZoneChanged => state.last_zone_changed_ids = vec![ledger_host],
+                _ => unreachable!("dynamic-host table contains only ledger filters"),
+            }
+            let ability = ResolvedAbility::new(
+                Effect::Attach {
+                    attachment: TargetFilter::ParentTarget,
+                    target: filter.clone(),
+                },
+                vec![
+                    TargetRef::Object(equipment),
+                    TargetRef::Object(explicit_host),
+                ],
+                ObjectId(999),
+                PlayerId(0),
+            );
+            let mut events = vec![];
+
+            resolve(&mut state, &ability, &mut events).unwrap();
+
+            assert_eq!(
+                state.objects[&equipment].attached_to,
+                Some(AttachTarget::Object(explicit_host)),
+                "{filter:?} must preserve an explicit nonattachment host"
+            );
+        }
+    }
+
+    #[test]
+    fn attach_resolve_dynamic_hosts_exhausted_by_attachment_is_a_journal_free_noop() {
+        let mut state = setup();
+        let equipment = spawn_equipment(&mut state, "Only Ledger Blade", 10);
+        state.last_zone_changed_ids = vec![equipment];
+        let ability = ResolvedAbility::new(
+            Effect::Attach {
+                attachment: TargetFilter::ParentTarget,
+                target: TargetFilter::LastZoneChanged,
+            },
+            vec![TargetRef::Object(equipment)],
+            ObjectId(999),
+            PlayerId(0),
+        );
+        let journal_len_before = state.resolved_rules_journal.entries().len();
+        let mut events = vec![];
+
+        resolve(&mut state, &ability, &mut events).unwrap();
+
+        assert!(state.objects[&equipment].attached_to.is_none());
+        assert!(state.objects[&equipment].attachments.is_empty());
+        assert_eq!(
+            state.resolved_rules_journal.entries().len(),
+            journal_len_before,
+            "the dynamic no-op must not write an attachment command"
+        );
+        assert_eq!(
+            events,
+            vec![GameEvent::EffectResolved {
+                kind: EffectKind::Attach,
+                source_id: ObjectId(999),
+                subject: None,
+            }]
+        );
+    }
+
+    #[test]
+    fn attach_resolve_keeps_nondynamic_missing_host_as_an_error() {
+        let mut state = setup();
+        let equipment = spawn_equipment(&mut state, "Unhosted Blade", 10);
+        let ability = ResolvedAbility::new(
+            Effect::Attach {
+                attachment: TargetFilter::SelfRef,
+                target: TargetFilter::ParentTarget,
+            },
+            vec![],
+            equipment,
+            PlayerId(0),
+        );
+        let mut events = vec![];
+
+        assert!(matches!(
+            resolve(&mut state, &ability, &mut events),
+            Err(EffectError::MissingParam(message)) if message == "No target for Attach"
+        ));
+        assert!(events.is_empty());
     }
 
     #[test]
