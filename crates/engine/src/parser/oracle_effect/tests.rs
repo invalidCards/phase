@@ -36,6 +36,101 @@ fn assert_tracked_mana_value_source(def: &AbilityDefinition, expected: TrackedAn
     ));
 }
 
+fn assert_attachment_chain_has_no_unimplemented(def: &AbilityDefinition) {
+    let mut current = Some(def);
+    while let Some(ability) = current {
+        assert!(
+            !matches!(ability.effect.as_ref(), Effect::Unimplemented { .. }),
+            "attachment chain must lower every clause: {def:#?}"
+        );
+        current = ability.sub_ability.as_deref();
+    }
+}
+
+#[test]
+fn typed_attachment_tail_matrix_lowers_without_unimplemented() {
+    for attachment in [
+        "this Equipment",
+        "that Equipment",
+        "this Aura",
+        "that Aura",
+        "this Fortification",
+        "that Fortification",
+    ] {
+        let text = format!(
+            "Gain control of target Equipment, then create a 0/0 black Phyrexian Germ creature token and attach {attachment} to it."
+        );
+        let parsed = parse_oracle_text(
+            &text,
+            "Typed Attachment Probe",
+            &[],
+            &["Instant".to_string()],
+            &[],
+        );
+        for ability in &parsed.abilities {
+            assert_attachment_chain_has_no_unimplemented(ability);
+        }
+        assert!(
+            !parsed.abilities.is_empty(),
+            "typed attachment matrix entry must parse as a spell: {text}"
+        );
+    }
+}
+
+#[test]
+fn grip_of_phyresis_exact_oracle_lowers_gain_control_token_attach_chain() {
+    let parsed = parse_oracle_text(
+        "Gain control of target Equipment, then create a 0/0 black Phyrexian Germ creature token and attach that Equipment to it.",
+        "Grip of Phyresis",
+        &[],
+        &["Instant".to_string()],
+        &[],
+    );
+    let root = parsed.abilities.first().expect("Grip spell ability");
+    assert_attachment_chain_has_no_unimplemented(root);
+    let Effect::GainControl {
+        target: TargetFilter::Typed(filter),
+    } = root.effect.as_ref()
+    else {
+        panic!(
+            "Grip must first gain control of target Equipment: {:?}",
+            root.effect
+        );
+    };
+    assert_eq!(filter.get_subtype(), Some("Equipment"));
+    let token = root
+        .sub_ability
+        .as_deref()
+        .expect("Germ token follows control");
+    let Effect::Token {
+        power: PtValue::Fixed(0),
+        toughness: PtValue::Fixed(0),
+        colors,
+        types,
+        ..
+    } = token.effect.as_ref()
+    else {
+        panic!(
+            "Grip must create a 0/0 black Phyrexian Germ: {:?}",
+            token.effect
+        );
+    };
+    assert!(colors.contains(&crate::types::mana::ManaColor::Black));
+    assert!(types.iter().any(|ty| ty == "Phyrexian"));
+    assert!(types.iter().any(|ty| ty == "Germ"));
+    let attach = token
+        .sub_ability
+        .as_deref()
+        .expect("Attach follows Germ token");
+    assert!(matches!(
+        attach.effect.as_ref(),
+        Effect::Attach {
+            attachment: TargetFilter::ParentTarget,
+            target: TargetFilter::LastCreated,
+        }
+    ));
+}
+
 fn nested_batch_aggregate() -> PropertyAggregate {
     PropertyAggregate::new(
         AggregateFunction::Sum,

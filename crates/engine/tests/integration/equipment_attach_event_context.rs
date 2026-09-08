@@ -1,7 +1,7 @@
 //! Public-resolution regressions for Equipment attachment continuations.
 
 use engine::game::game_object::AttachTarget;
-use engine::game::scenario::{GameRunner, GameScenario, P0};
+use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AdditionalCost,
     AdditionalCostRepeatability, ChoiceType, ControllerRef, Effect, MultiTargetSpec, QuantityExpr,
@@ -9,10 +9,14 @@ use engine::types::ability::{
 };
 use engine::types::actions::GameAction;
 use engine::types::card_type::CoreType;
+use engine::types::events::GameEvent;
 use engine::types::game_state::{CastPaymentMode, WaitingFor};
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaCost, ManaType, ManaUnit};
 use engine::types::phase::Phase;
+use engine::types::zones::Zone;
+
+const GRIP_OF_PHYRESIS_ORACLE: &str = "Gain control of target Equipment, then create a 0/0 black Phyrexian Germ creature token and attach that Equipment to it.";
 
 const SOKKA_AND_SUKI_ORACLE: &str = "Whenever Sokka and Suki or another Ally you control enters, \
 attach up to one target Equipment you control to that creature.\n\
@@ -1145,4 +1149,92 @@ fn hammer_of_nazahn_parent_target_etb_remains_attached() {
         Some(AttachTarget::Object(creature)),
         "Hammer's ParentTarget event helper must still attach the entering Equipment"
     );
+}
+
+#[test]
+fn grip_of_phyresis_steals_selected_equipment_and_keeps_its_boosted_germ_alive() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let selected = scenario
+        .add_artifact_from_oracle(
+            P1,
+            "Selected Grip Equipment",
+            "Equipped creature gets +0/+1.",
+        )
+        .with_subtypes(vec!["Equipment"])
+        .id();
+    let decoy = scenario
+        .add_artifact_from_oracle(P0, "Decoy Grip Equipment", "Equipped creature gets +0/+2.")
+        .with_subtypes(vec!["Equipment"])
+        .id();
+    let grip = scenario
+        .add_spell_to_hand_from_oracle(P0, "Grip of Phyresis", true, GRIP_OF_PHYRESIS_ORACLE)
+        .id();
+    let mut runner = scenario.build();
+
+    let outcome = runner.cast(grip).target_object(selected).resolve();
+    outcome.assert_controls(P0, selected);
+    let germ = outcome
+        .find_object(|object| {
+            object.is_token && object.name == "Phyrexian Germ" && object.zone == Zone::Battlefield
+        })
+        .expect("the selected Equipment's +0/+1 must keep Grip's Germ on the battlefield");
+    assert_eq!(
+        outcome.state().objects[&selected].attached_to,
+        Some(AttachTarget::Object(germ)),
+        "the stolen selected Equipment must attach to Grip's created Germ"
+    );
+    assert!(outcome.state().objects[&germ]
+        .attachments
+        .contains(&selected));
+    // CR 613.1g + CR 613.4c: the selected Equipment's +0/+1 applies in layer 7c.
+    assert_eq!(outcome.power_toughness(germ), (0, 1));
+    assert_eq!(outcome.controller(decoy), P0);
+    assert_eq!(outcome.state().objects[&decoy].attached_to, None);
+}
+
+#[test]
+fn grip_of_phyresis_attaches_before_zero_toughness_germ_dies() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let selected = scenario
+        .add_artifact_from_oracle(P1, "Unboosted Grip Equipment", "")
+        .with_subtypes(vec!["Equipment"])
+        .id();
+    let decoy = scenario
+        .add_artifact_from_oracle(P0, "Unchanged Grip Decoy", "Equipped creature gets +0/+1.")
+        .with_subtypes(vec!["Equipment"])
+        .id();
+    let grip = scenario
+        .add_spell_to_hand_from_oracle(P0, "Grip of Phyresis", true, GRIP_OF_PHYRESIS_ORACLE)
+        .id();
+    let mut runner = scenario.build();
+
+    let outcome = runner.cast(grip).target_object(selected).resolve();
+    outcome.assert_controls(P0, selected);
+    let germ = outcome
+        .find_object(|object| {
+            object.is_token && object.name == "Phyrexian Germ" && object.zone == Zone::Graveyard
+        })
+        .expect("unboosted 0/0 Germ must be in its owner's graveyard");
+    let attach_index = outcome.events().iter().position(|event| matches!(
+        event,
+        GameEvent::EffectResolved { kind: engine::types::ability::EffectKind::Attach, source_id, .. }
+            if *source_id == grip
+    )).expect("Grip's Attach effect must resolve: {:?}", outcome.events());
+    let germ_dies_index = outcome.events().iter().position(|event| matches!(
+        event,
+        GameEvent::ZoneChanged { object_id, from: Some(Zone::Battlefield), to: Zone::Graveyard, .. }
+            if *object_id == germ
+    )).expect("created Germ must move battlefield to graveyard: {:?}", outcome.events());
+    // CR 608.2c + CR 701.3a + CR 301.5b + CR 704.3 + CR 704.4 + CR 704.5f:
+    // attach resolves in written order, then the next SBA check puts the 0-toughness Germ into its graveyard.
+    assert!(
+        attach_index < germ_dies_index,
+        "Attach must precede the Germ's SBA zone change"
+    );
+    assert_eq!(outcome.zone_of(selected), Zone::Battlefield);
+    assert_eq!(outcome.state().objects[&selected].attached_to, None);
+    assert_eq!(outcome.controller(decoy), P0);
+    assert_eq!(outcome.state().objects[&decoy].attached_to, None);
 }
