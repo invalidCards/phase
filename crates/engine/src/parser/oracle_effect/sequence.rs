@@ -3,7 +3,7 @@ use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_till, take_until};
 use nom::character::complete::multispace1;
 use nom::combinator::{all_consuming, eof, map, map_opt, opt, rest, value};
-use nom::sequence::{pair, preceded, terminated};
+use nom::sequence::{preceded, terminated};
 use nom::Parser;
 
 use super::super::oracle_nom::bridge::nom_on_lower;
@@ -2530,29 +2530,6 @@ fn starts_attach_equipment_was_attached_clause(text: &str) -> bool {
     result.is_ok()
 }
 
-/// CR 608.2c + CR 701.3a + CR 301.5b: A following attachment instruction is
-/// resolved in printed order; effects may attach Equipment (and the general
-/// attach action also covers Auras and Fortifications) to its stated object.
-///
-/// This deliberately admits only self/anaphoric typed attachments, never a
-/// named attachment such as "attach Fractal Harness to it".
-fn parse_typed_attachment_clause_start(input: &str) -> OracleResult<'_, ()> {
-    let (input, _) = tag("attach ").parse(input)?;
-    let (input, _) = alt((
-        value((), tag("~")),
-        value(
-            (),
-            pair(
-                alt((tag("this "), tag("that "))),
-                alt((tag("equipment"), tag("aura"), tag("fortification"))),
-            ),
-        ),
-    ))
-    .parse(input)?;
-    let (input, _) = tag(" to ").parse(input)?;
-    Ok((input, ()))
-}
-
 /// True when `current` ends with the bare-and delimiter during character-by-
 /// character clause chunking. Must match only the terminal suffix — a naive
 /// `take_until(" and ")` from the start binds the first internal " and " (e.g.
@@ -2880,11 +2857,16 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
     // 21-arm limit; adding it inline would push the cluster over and trip
     // the `Choice<...>` trait-bound check at compile time.
     .or(value((), tag("puts ")))
-    // CR 608.2c + CR 701.3a + CR 301.5b: split only typed self/anaphoric
-    // attachment instructions; preserve named attachment clauses for their
-    // specialized lowering route and retain Zack Fair's attached-Equipment form.
-    .or(value((), parse_typed_attachment_clause_start))
-    .or(value((), tag("attach an equipment that was attached ")))
+    // CR 301.5b + CR 608.2c: these attach forms are imperative game actions,
+    // not noun-phrase continuations. Keep the matcher narrow so name-based
+    // chains like "put counters on it and attach Fractal Harness to it" stay
+    // available to the token-counter attach rewriter. "That Equipment" is the
+    // selected-object anaphor used by Grip of Phyresis.
+    .or(alt((
+        value((), tag("attach this equipment ")),
+        value((), tag("attach that equipment ")),
+        value((), tag("attach an equipment that was attached ")),
+    )))
     .or(alt((
         // CR 608.2c: Subject-prefixed verb patterns — "you [verb]" is always a clause start.
         value((), tag("you gain ")),
@@ -9949,45 +9931,21 @@ mod tests {
     }
 
     #[test]
-    fn bare_and_starts_typed_attachment_clause_matrix_but_not_named_attachment() {
+    fn bare_and_starts_equipment_attachment_anaphors_but_not_other_attachment_forms() {
+        for clause in ["attach this Equipment to it", "attach that Equipment to it"] {
+            assert!(starts_bare_and_clause(clause), "must split: {clause}");
+        }
         for clause in [
             "attach ~ to it",
-            "attach this Equipment to it",
-            "attach that Equipment to it",
             "attach this Aura to it",
             "attach that Aura to it",
             "attach this Fortification to it",
             "attach that Fortification to it",
+            "attach Fractal Harness to it",
         ] {
-            assert!(starts_bare_and_clause(clause), "must split: {clause}");
-        }
-        assert!(
-            !starts_bare_and_clause("attach Fractal Harness to it"),
-            "named attachment remains available to its specialized lowering path"
-        );
-    }
-
-    #[test]
-    fn bare_and_splits_typed_attachment_tail_matrix() {
-        for attachment in [
-            "~",
-            "this Equipment",
-            "that Equipment",
-            "this Aura",
-            "that Aura",
-            "this Fortification",
-            "that Fortification",
-        ] {
-            let text = format!(
-                "create a 0/0 black Phyrexian Germ creature token and attach {attachment} to it"
-            );
-            assert_eq!(
-                clause_texts(&text),
-                vec![
-                    "create a 0/0 black Phyrexian Germ creature token".to_string(),
-                    format!("attach {attachment} to it"),
-                ],
-                "must split typed attachment tail: {text}"
+            assert!(
+                !starts_bare_and_clause(clause),
+                "must preserve specialized/non-Equipment route: {clause}"
             );
         }
     }

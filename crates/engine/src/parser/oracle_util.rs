@@ -922,9 +922,6 @@ pub const SELF_REF_TYPE_PHRASES: &[&str] = &[
     "this attraction",
     "this equipment",
     "this aura",
-    // CR 201.5: "this Fortification" refers to the source object, so normalize it
-    // with the other typed self-references before clause splitting.
-    "this fortification",
     "this vehicle",
     "this planeswalker",
     // CR 114.1 + CR 114.3: An emblem is an object, usually nameless; this phrase refers to that source.
@@ -2811,14 +2808,6 @@ mod tests {
         assert_eq!(
             normalize_card_name_refs("When Sharuum enters", "Sharuum the Hegemon"),
             "When ~ enters"
-        );
-    }
-
-    #[test]
-    fn normalize_typed_fortification_self_reference() {
-        assert_eq!(
-            normalize_card_name_refs("Attach this Fortification to it.", "Siege Engine"),
-            "Attach ~ to it."
         );
     }
 

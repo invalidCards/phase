@@ -47,7 +47,7 @@ fn assert_attachment_chain_has_no_unimplemented(def: &AbilityDefinition) {
     }
 }
 
-fn assert_typed_attachment_tail_chain(text: &str, expected_attachment: TargetFilter) {
+fn assert_grip_of_phyresis_chain(text: &str) {
     let parsed = parse_oracle_text(
         text,
         "Typed Attachment Probe",
@@ -112,7 +112,7 @@ fn assert_typed_attachment_tail_chain(text: &str, expected_attachment: TargetFil
     assert_eq!(
         attach.effect.as_ref(),
         &Effect::Attach {
-            attachment: expected_attachment,
+            attachment: TargetFilter::ParentTarget,
             target: TargetFilter::LastCreated,
         },
         "attachment and recipient provenance must be exact: {text}"
@@ -124,27 +124,9 @@ fn assert_typed_attachment_tail_chain(text: &str, expected_attachment: TargetFil
 }
 
 #[test]
-fn typed_attachment_tail_matrix_lowers_exact_chain_and_provenance() {
-    for (attachment, expected_attachment) in [
-        ("this Equipment", TargetFilter::SelfRef),
-        ("that Equipment", TargetFilter::ParentTarget),
-        ("this Aura", TargetFilter::SelfRef),
-        ("that Aura", TargetFilter::ParentTarget),
-        ("this Fortification", TargetFilter::SelfRef),
-        ("that Fortification", TargetFilter::ParentTarget),
-    ] {
-        let text = format!(
-            "Gain control of target Equipment, then create a 0/0 black Phyrexian Germ creature token and attach {attachment} to it."
-        );
-        assert_typed_attachment_tail_chain(&text, expected_attachment);
-    }
-}
-
-#[test]
 fn grip_of_phyresis_exact_oracle_lowers_gain_control_token_attach_chain() {
-    assert_typed_attachment_tail_chain(
+    assert_grip_of_phyresis_chain(
         "Gain control of target Equipment, then create a 0/0 black Phyrexian Germ creature token and attach that Equipment to it.",
-        TargetFilter::ParentTarget,
     );
 }
 
