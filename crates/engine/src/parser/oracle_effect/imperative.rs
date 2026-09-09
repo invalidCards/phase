@@ -24659,4 +24659,22 @@ mod tests {
             Effect::Unimplemented { .. }
         ));
     }
+
+    /// CR 615.1a: Event-relative formulas need a delayed prevention-event
+    /// representation that this imperative parser does not yet model. Refuse the
+    /// complete Tornellan Protector clause rather than falling through to the
+    /// ordinary `PreventDamage::Next(1)` convenience default.
+    #[test]
+    fn event_relative_prevention_formula_is_unimplemented_in_imperative_dispatch() {
+        let text = "Until end of turn, each time damage is dealt to target creature or player, \
+                    prevent X of that damage, where X is a number from 1 to 3 chosen at random \
+                    each time.";
+        let lower = text.to_lowercase();
+        let parsed = parse_imperative_family_ast(text, &lower, &mut ParseContext::default());
+        assert!(matches!(
+            parsed,
+            Some(ImperativeFamilyAst::GainKeyword(Effect::Unimplemented { name, .. }))
+                if name == "prevent"
+        ));
+    }
 }

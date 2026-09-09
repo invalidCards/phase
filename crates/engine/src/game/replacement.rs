@@ -9191,24 +9191,23 @@ fn apply_single_replacement(
         ))
     .then(|| proposed.clone());
 
-    // CR 614.6 + CR 614.12a: Optional `Prevent` replacements (Obstinate Familiar,
-    // Island Sanctuary — "you may skip that draw") and optional damage-prevention
-    // formulas (Battletide Alchemist) modify the event only on the accept
-    // (Execute) branch. Declining leaves the original event intact, even though
-    // the generic Draw/Damage appliers read their modifier from the definition
-    // rather than the selected branch.
-    if matches!(branch, ReplacementBranch::Decline) {
-        if let Some(repl_def) = repl_def_ref {
-            if replacement_mode_is_optional(&repl_def.mode)
+    // CR 614.6 + CR 615.1 + CR 615.1a: An optional replacement modifies a
+    // damage event only on its accepted branch. The shared damage applier reads
+    // a definition's direct outcome (amount modification, prevention shield, or
+    // redirection shield), so a decline must bypass every such outcome before
+    // that applier runs. `QuantityModification::Prevent` deliberately remains
+    // here too: the Draw applier has the same definition-driven shape, and an
+    // optional draw-skip decline must still deliver the original draw.
+    if matches!(branch, ReplacementBranch::Decline)
+        && repl_def_ref.is_some_and(|repl_def| {
+            replacement_mode_is_optional(&repl_def.mode)
                 && (repl_def.quantity_modification == Some(QuantityModification::Prevent)
-                    || matches!(
-                        repl_def.damage_modification,
-                        Some(DamageModification::PreventionMinus { .. })
-                    ))
-            {
-                return Ok(proposed);
-            }
-        }
+                    || (matches!(proposed, ProposedEvent::Damage { .. })
+                        && (repl_def.damage_modification.is_some()
+                            || repl_def.shield_kind.is_shield())))
+        })
+    {
+        return Ok(proposed);
     }
 
     if let Some(handler) = registry.get(&event_key) {

@@ -5,34 +5,33 @@
 //! from the affected player's replacement ordering authority.
 
 use engine::game::combat::AttackTarget;
-use engine::game::effects::deal_damage;
+use engine::game::effects::{attach::attach_to, deal_damage};
 use engine::game::game_object::AttachTarget;
 use engine::game::scenario::{GameRunner, GameScenario, P0, P1};
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{
-    DamageModification, Effect, QuantityExpr, ReplacementDefinition, ResolvedAbility, TargetFilter,
-    TargetRef,
+    DamageModification, DamageRedirectTarget, Effect, PreventionAmount, QuantityExpr,
+    RedirectionLifetime, ReplacementChoiceAuthority, ReplacementDefinition, ReplacementMode,
+    ResolvedAbility, TargetFilter, TargetRef,
 };
 use engine::types::actions::GameAction;
-use engine::types::card_type::CoreType;
 use engine::types::counter::CounterType;
 use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::ObjectId;
+use engine::types::keywords::Keyword;
 use engine::types::mana::ManaCost;
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 use engine::types::replacements::ReplacementEvent;
+use engine::types::zones::Zone;
 
-const GISELA: &str =
-    "If a source would deal damage to you or a permanent you control, prevent half that damage, rounded up.";
+const GISELA: &str = "Flying, first strike\nIf a source would deal damage to an opponent or a permanent an opponent controls, that source deals double that damage to that player or permanent instead.\nIf a source would deal damage to you or a permanent you control, prevent half that damage, rounded up.";
 const BATTLETIDE: &str =
     "If a source would deal damage to a player, you may prevent X of that damage, where X is the number of Clerics you control.";
-const REM: &str =
-    "If a spell would deal damage to you or another permanent you control, prevent that damage.";
+const REM: &str = "Flying, haste\nIf a spell would deal damage to you or another permanent you control, prevent that damage.\nIf a spell would deal damage to an opponent or another permanent an opponent controls, it deals that much damage plus 1 instead.";
 const PLATED_PEGASUS: &str =
     "If a spell would deal damage to a permanent or player, prevent 1 damage that spell would deal to that permanent or player.";
-const SHIELD_OF_THE_RIGHTEOUS: &str =
-    "If a source would deal damage to equipped creature, prevent X of that damage, where X is the number of creatures you control.";
+const SHIELD_OF_THE_AVATAR: &str = "If a source would deal damage to equipped creature, prevent X of that damage, where X is the number of creatures you control.\nEquip {2} ({2}: Attach to target creature you control. Equip only as a sorcery.)";
 const COVER_OF_WINTER: &str = "Cumulative upkeep {S} (At the beginning of your upkeep, put an age counter on this permanent, then sacrifice it unless you pay its upkeep cost for each age counter on it. {S} can be paid with one mana from a snow source.)\nIf a creature would deal combat damage to you and/or one or more creatures you control, prevent X of that damage, where X is the number of age counters on this enchantment.\n{S}: Put an age counter on this enchantment.";
 const BENEVOLENT_UNICORN: &str =
     "If a spell would deal damage to a permanent or player, it deals that much damage minus 1 to that permanent or player instead.";
@@ -83,7 +82,8 @@ fn choose_source_candidate(runner: &mut GameRunner, source: ObjectId) {
 fn gisela_rounds_up_and_affected_player_orders_against_a_doubler() {
     let mut scenario = GameScenario::new();
     let gisela = scenario
-        .add_creature_from_oracle(P0, "Gisela, Blade of Goldnight", 5, 5, GISELA)
+        .add_creature(P0, "Gisela, Blade of Goldnight", 5, 5)
+        .from_oracle_text_with_keywords(&["Flying", "First strike"], GISELA)
         .id();
     let doubler = scenario.add_creature(P1, "Damage Doubler", 2, 2).id();
     let source = scenario.add_creature(P1, "Damage Source", 3, 3).id();
@@ -124,7 +124,8 @@ fn gisela_rounds_up_and_affected_player_orders_against_a_doubler() {
 
     let mut scenario = GameScenario::new();
     let gisela = scenario
-        .add_creature_from_oracle(P0, "Gisela, Blade of Goldnight", 5, 5, GISELA)
+        .add_creature(P0, "Gisela, Blade of Goldnight", 5, 5)
+        .from_oracle_text_with_keywords(&["Flying", "First strike"], GISELA)
         .id();
     let doubler = scenario.add_creature(P1, "Damage Doubler", 2, 2).id();
     let source = scenario.add_creature(P1, "Damage Source", 3, 3).id();
@@ -153,12 +154,16 @@ fn gisela_rounds_up_and_affected_player_orders_against_a_doubler() {
         before - 5,
         "doubling first makes 10 damage, then Gisela prevents 5 rounded up"
     );
+    let gisela_object = &runner.state().objects[&gisela];
+    assert_eq!(
+        gisela_object.replacement_definitions.len(),
+        2,
+        "reach guard: both of Gisela's printed damage replacements must be present"
+    );
     assert!(
-        runner.state().objects[&gisela]
-            .replacement_definitions
-            .len()
-            == 1,
-        "reach guard: Gisela's printed static replacement must be present"
+        gisela_object.keywords.contains(&Keyword::Flying)
+            && gisela_object.keywords.contains(&Keyword::FirstStrike),
+        "Gisela's keyword-aware Oracle fixture must retain Flying and first strike"
     );
 }
 
@@ -257,30 +262,121 @@ fn battletide_decline_leaves_the_original_damage_untouched() {
     assert_eq!(runner.life(P1), before - 5);
 }
 
+/// CR 614.6 + CR 615.1a: declining an optional prevention or redirection
+/// replacement leaves the original damage event unchanged. These use the live
+/// `GameAction::ChooseReplacement` path because the appliers read their direct
+/// outcome from the stored definition, not from an AST-only test fixture.
+#[test]
+fn optional_shield_and_redirect_declines_leave_original_damage_untouched() {
+    let mut scenario = GameScenario::new();
+    let shield = scenario.add_creature(P0, "Optional Shield", 1, 1).id();
+    let source = scenario.add_creature(P1, "Damage Source", 3, 3).id();
+    let mut runner = scenario.build();
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&shield)
+        .expect("optional shield source must exist")
+        .replacement_definitions
+        .push(
+            ReplacementDefinition::new(ReplacementEvent::DamageDone)
+                .prevention_shield(PreventionAmount::All)
+                .mode(ReplacementMode::Optional { decline: None })
+                .choice_authority(ReplacementChoiceAuthority::SourceController),
+        );
+    set_priority(&mut runner, P0);
+    let before = runner.life(P1);
+    let mut events = Vec::new();
+    deal_damage::resolve(
+        runner.state_mut(),
+        &damage_ability(source, P1, TargetRef::Player(P1), 5),
+        &mut events,
+    )
+    .expect("damage must reach the optional shield replacement");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::ReplacementChoice { player: P0, .. }
+    ));
+    runner
+        .act(GameAction::ChooseReplacement { index: 1 })
+        .expect("the shield controller can decline prevention");
+    assert_eq!(runner.life(P1), before - 5);
+
+    let mut scenario = GameScenario::new();
+    let redirect = scenario.add_creature(P0, "Optional Redirect", 1, 1).id();
+    let source = scenario.add_creature(P1, "Damage Source", 3, 3).id();
+    let mut runner = scenario.build();
+    runner
+        .state_mut()
+        .objects
+        .get_mut(&redirect)
+        .expect("optional redirect source must exist")
+        .replacement_definitions
+        .push(
+            ReplacementDefinition::new(ReplacementEvent::DamageDone)
+                .redirection_shield(
+                    DamageRedirectTarget::Controller,
+                    PreventionAmount::All,
+                    RedirectionLifetime::OneOpportunity,
+                )
+                .mode(ReplacementMode::Optional { decline: None })
+                .choice_authority(ReplacementChoiceAuthority::SourceController),
+        );
+    set_priority(&mut runner, P0);
+    let p0_before = runner.life(P0);
+    let p1_before = runner.life(P1);
+    let mut events = Vec::new();
+    deal_damage::resolve(
+        runner.state_mut(),
+        &damage_ability(source, P1, TargetRef::Player(P1), 5),
+        &mut events,
+    )
+    .expect("damage must reach the optional redirect replacement");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::ReplacementChoice { player: P0, .. }
+    ));
+    runner
+        .act(GameAction::ChooseReplacement { index: 1 })
+        .expect("the redirect controller can decline redirection");
+    assert_eq!(
+        runner.life(P0),
+        p0_before,
+        "declining must not redirect damage"
+    );
+    assert_eq!(
+        runner.life(P1),
+        p1_before - 5,
+        "the original damage must be dealt"
+    );
+}
+
 #[test]
 fn rem_and_plated_apply_only_to_spells_and_keep_their_recipient_scopes() {
     let mut scenario = GameScenario::new();
     let rem = scenario
-        .add_creature_from_oracle(P0, "Rem Karolus, Stalwart Slayer", 3, 4, REM)
+        .add_creature(P0, "Rem Karolus, Stalwart Slayer", 2, 3)
+        .from_oracle_text_with_keywords(&["Flying", "Haste"], REM)
         .id();
     let ally = scenario.add_creature(P0, "Protected Ally", 1, 5).id();
-    let spell_to_rem = scenario
-        .add_spell_to_hand_from_oracle(P1, "Spell to Rem", true, DAMAGE_SPELL)
-        .with_mana_cost(ManaCost::generic(0))
-        .id();
     let spell_to_ally = scenario
         .add_spell_to_hand_from_oracle(P1, "Spell to Ally", true, DAMAGE_SPELL)
         .with_mana_cost(ManaCost::generic(0))
         .id();
-    let permanent_source = scenario.add_creature(P1, "Permanent Source", 3, 3).id();
     let mut runner = scenario.build();
-    set_priority(&mut runner, P1);
-    runner.cast(spell_to_rem).target_object(rem).resolve();
+
+    let rem_object = &runner.state().objects[&rem];
     assert_eq!(
-        runner.state().objects[&rem].damage_marked,
-        3,
-        "Rem's 'another permanent' clause must exclude Rem itself"
+        rem_object.replacement_definitions.len(),
+        2,
+        "reach guard: both of Rem's printed spell-damage replacements must be present"
     );
+    assert!(
+        rem_object.keywords.contains(&Keyword::Flying)
+            && rem_object.keywords.contains(&Keyword::Haste),
+        "Rem's keyword-aware Oracle fixture must retain Flying and haste"
+    );
+
     set_priority(&mut runner, P1);
     runner.cast(spell_to_ally).target_object(ally).resolve();
     assert_eq!(
@@ -288,6 +384,48 @@ fn rem_and_plated_apply_only_to_spells_and_keep_their_recipient_scopes() {
         0,
         "a spell's damage to another permanent the controller owns is prevented"
     );
+
+    let mut scenario = GameScenario::new();
+    scenario
+        .add_creature(P0, "Rem Karolus, Stalwart Slayer", 2, 3)
+        .from_oracle_text_with_keywords(&["Flying", "Haste"], REM);
+    let spell_to_opponent = scenario
+        .add_spell_to_hand_from_oracle(P0, "Spell to Opponent", true, DAMAGE_SPELL)
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner = scenario.build();
+    set_priority(&mut runner, P0);
+    let opponent_damage = runner.cast(spell_to_opponent).target_player(P1).resolve();
+    assert_eq!(
+        opponent_damage.life_delta(P1),
+        -4,
+        "Rem adds one to spell damage dealt to an opponent"
+    );
+
+    let mut scenario = GameScenario::new();
+    let rem = scenario
+        .add_creature(P0, "Rem Karolus, Stalwart Slayer", 2, 3)
+        .from_oracle_text_with_keywords(&["Flying", "Haste"], REM)
+        .id();
+    let spell_to_rem = scenario
+        .add_spell_to_hand_from_oracle(P1, "Spell to Rem", true, DAMAGE_SPELL)
+        .with_mana_cost(ManaCost::generic(0))
+        .id();
+    let mut runner = scenario.build();
+    set_priority(&mut runner, P1);
+    runner.cast(spell_to_rem).target_object(rem).resolve();
+    assert_eq!(
+        runner.state().objects[&rem].zone,
+        Zone::Graveyard,
+        "Rem's 'another permanent' clause must exclude Rem itself, so lethal spell damage kills its 2/3 body"
+    );
+
+    let mut scenario = GameScenario::new();
+    scenario
+        .add_creature(P0, "Rem Karolus, Stalwart Slayer", 2, 3)
+        .from_oracle_text_with_keywords(&["Flying", "Haste"], REM);
+    let permanent_source = scenario.add_creature(P1, "Permanent Source", 3, 3).id();
+    let mut runner = scenario.build();
     let mut events = Vec::new();
     deal_damage::resolve(
         runner.state_mut(),
@@ -332,26 +470,28 @@ fn rem_and_plated_apply_only_to_spells_and_keep_their_recipient_scopes() {
 }
 
 #[test]
-fn shield_formula_uses_the_equipped_recipient_and_live_creature_count() {
+fn shield_of_the_avatar_uses_the_equipped_recipient_and_live_creature_count() {
     let mut scenario = GameScenario::new();
     let shield = scenario
-        .add_creature_from_oracle(P0, "Shield", 0, 1, SHIELD_OF_THE_RIGHTEOUS)
+        .add_artifact_from_oracle(P0, "Shield of the Avatar", SHIELD_OF_THE_AVATAR)
+        .with_subtypes(vec!["Equipment"])
         .id();
     let equipped = scenario.add_creature(P0, "Equipped", 2, 7).id();
     let unrelated = scenario.add_creature(P0, "Unrelated", 2, 7).id();
     let source = scenario.add_creature(P1, "Damage Source", 3, 3).id();
     let mut runner = scenario.build();
-    {
-        let object = runner.state_mut().objects.get_mut(&shield).unwrap();
-        object.card_types.core_types = vec![CoreType::Artifact];
-        object.card_types.subtypes = vec!["Equipment".to_string()];
-        object.base_card_types = object.card_types.clone();
-        object.power = None;
-        object.toughness = None;
-        object.base_power = None;
-        object.base_toughness = None;
-        object.attached_to = Some(AttachTarget::Object(equipped));
-    }
+    assert_eq!(attach_to(runner.state_mut(), shield, equipped), None);
+    assert_eq!(
+        runner.state().objects[&shield].attached_to,
+        Some(AttachTarget::Object(equipped)),
+        "the real Equipment must be attached through the production attachment helper"
+    );
+    assert!(
+        runner.state().objects[&equipped]
+            .attachments
+            .contains(&shield),
+        "the equipped creature must reciprocally record Shield of the Avatar"
+    );
     let mut events = Vec::new();
     deal_damage::resolve(
         runner.state_mut(),
@@ -472,7 +612,7 @@ fn unsupported_event_relative_prevention_cards_remain_named_prevent_gaps() {
     ] {
         let types: Vec<String> = types.iter().map(|ty| (*ty).to_string()).collect();
         let parsed = parse_oracle_text(oracle, name, &[], &types, &[]);
-        let effects = parsed
+        let direct_effects = parsed
             .abilities
             .iter()
             .map(|ability| ability.effect.as_ref())
@@ -484,14 +624,14 @@ fn unsupported_event_relative_prevention_cards_remain_named_prevent_gaps() {
             )
             .collect::<Vec<_>>();
         assert!(
-            effects
+            direct_effects
                 .iter()
                 .copied()
                 .any(|effect| matches!(effect, Effect::Unimplemented { name: gap, .. } if gap == "prevent")),
-            "{name} must preserve its unsupported prevention clause as an honest named gap: {parsed:#?}"
+            "{name} must preserve its unsupported prevention clause as an honest named gap through the full Oracle parser: {parsed:#?}"
         );
         assert!(
-            effects.iter().copied().all(|effect| !matches!(
+            direct_effects.iter().copied().all(|effect| !matches!(
                 effect,
                 Effect::PreventDamage {
                     amount: engine::types::ability::PreventionAmount::Next(1),

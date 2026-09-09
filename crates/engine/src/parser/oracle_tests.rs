@@ -26913,6 +26913,38 @@ fn bound_delayed_recalls_are_not_demoted() {
     }
 }
 
+/// CR 615.1a: Tornellan Protector's full activated-ability line reaches the
+/// document parser's imperative dispatch and must report its unsupported
+/// event-relative formula as a named `prevent` gap. This complements the
+/// imperative-level regression by proving the router does not substitute the
+/// historical one-damage fallback on the production Oracle-text path.
+#[test]
+fn tornellan_protector_event_relative_formula_is_an_honest_prevent_gap() {
+    let parsed = parse_oracle_text(
+        "{T}: Until end of turn, each time damage is dealt to target creature or player, \
+         prevent X of that damage, where X is a number from 1 to 3 chosen at random each time.",
+        "Tornellan Protector",
+        &[],
+        &["Creature".to_string()],
+        &[],
+    );
+    let ability = parsed
+        .abilities
+        .first()
+        .expect("the activated ability must reach the production parser");
+    assert!(matches!(
+        ability.effect.as_ref(),
+        Effect::Unimplemented { name, .. } if name == "prevent"
+    ));
+    assert!(!matches!(
+        ability.effect.as_ref(),
+        Effect::PreventDamage {
+            amount: PreventionAmount::Next(1),
+            ..
+        }
+    ));
+}
+
 // ---------------------------------------------------------------------------
 // Namor, Atlantean King — the attacked-player predicate (CR 603.2) and the
 // "attacking that player" defending-player anaphor (CR 508.5).
