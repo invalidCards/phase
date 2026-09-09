@@ -199,16 +199,11 @@ pub(crate) fn apply_precomputed_copy_values(
     // pruning is independent of snapshot folding: a mixed exception such as a
     // name change plus a dynamic P/T value cannot fold all of its riders, but
     // a subsequent copy must still not inherit the source P/T CDA.
-    let cda_pruning_succeeded = if let Some(pruned_statics) =
-        super::copy_exception::prune_copy_exception_overridden_cdas(
-            &values.static_definitions,
-            &additional_modifications,
-        ) {
-        values.static_definitions = std::sync::Arc::new(pruned_statics);
-        true
-    } else {
-        false
-    };
+    let cda_pruning = super::copy_exception::prune_copy_exception_overridden_cdas(
+        &values.static_definitions,
+        &additional_modifications,
+    );
+    values.static_definitions = std::sync::Arc::new(cda_pruning.definitions);
 
     // CR 707.9a + CR 707.9b: Ability grants and characteristic modifications
     // made during copying become copiable values. The layer pipeline used to
@@ -218,9 +213,10 @@ pub(crate) fn apply_precomputed_copy_values(
     // `CopyValues` payload instead. This is deliberately all-or-nothing: an
     // unfamiliar modification keeps the historical layered representation,
     // rather than making a partial snapshot with silently different semantics.
-    // If CDA classification failed, retain that same fallback so a source
-    // definition is never selectively discarded.
-    let folded = cda_pruning_succeeded
+    // If any CDA classification failed, retain that same fallback so its
+    // unknown source definition is never folded around selectively. Classified
+    // sibling CDAs have still been pruned above.
+    let folded = cda_pruning.all_definitions_classified
         && fold_admitted_copy_exceptions_into_values(
             &mut values,
             state.objects.get(&source_id),

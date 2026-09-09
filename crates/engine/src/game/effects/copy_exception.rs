@@ -42,30 +42,50 @@ impl CopyExceptionOverrides {
     }
 }
 
+/// Source CDA pruning for a copy exception.
+///
+/// `definitions` retains every source definition that this typed vocabulary
+/// cannot classify. `all_definitions_classified` is separate because a
+/// permanent-copy snapshot must retain its legacy layered representation when
+/// any source CDA could define an unknown characteristic.
+pub(crate) struct CopyExceptionCdaPruning {
+    pub(crate) definitions: Vec<StaticDefinition>,
+    pub(crate) all_definitions_classified: bool,
+}
+
 /// Prunes source CDAs whose defined characteristic is overridden by a copy
-/// exception, returning `None` for a CDA shape outside the typed vocabulary.
+/// exception, retaining only an individual CDA whose shape is outside the
+/// typed vocabulary.
 ///
 /// CR 707.9d: this is shared by permanent-copy snapshots and copy-token body
 /// materialization, because both paths establish the copied object's copiable
-/// values. An unclassified CDA leaves its source definitions intact rather than
-/// risking an over-broad deletion.
+/// values. An unclassified CDA cannot justify its own deletion, but must not
+/// stop a separate, classified CDA from being pruned.
 pub(crate) fn prune_copy_exception_overridden_cdas(
     definitions: &Arc<Vec<StaticDefinition>>,
     modifications: &[ContinuousModification],
-) -> Option<Vec<StaticDefinition>> {
+) -> CopyExceptionCdaPruning {
     let overrides = CopyExceptionOverrides::from_modifications(modifications);
     if overrides.is_empty() {
-        return Some(definitions.as_ref().clone());
+        return CopyExceptionCdaPruning {
+            definitions: definitions.as_ref().clone(),
+            all_definitions_classified: true,
+        };
     }
 
     let mut retained = Vec::with_capacity(definitions.len());
+    let mut all_definitions_classified = true;
     for definition in definitions.iter() {
         if !definition.characteristic_defining {
             retained.push(definition.clone());
             continue;
         }
 
-        let axes = cda_defined_axes(definition)?;
+        let Some(axes) = cda_defined_axes(definition) else {
+            all_definitions_classified = false;
+            retained.push(definition.clone());
+            continue;
+        };
         let overridden = (axes.card_types && overrides.card_types)
             || (axes.color && overrides.color)
             || (axes.power && overrides.power)
@@ -74,7 +94,10 @@ pub(crate) fn prune_copy_exception_overridden_cdas(
             retained.push(definition.clone());
         }
     }
-    Some(retained)
+    CopyExceptionCdaPruning {
+        definitions: retained,
+        all_definitions_classified,
+    }
 }
 
 /// A CDA definition is removable as a whole only when each of its modifications
@@ -129,9 +152,9 @@ mod tests {
                     value: QuantityExpr::Fixed { value: 1 },
                 },
             ],
-        )
-        .expect("dynamic P/T CDAs are in the classified vocabulary");
+        );
 
-        assert!(pruned.is_empty());
+        assert!(pruned.all_definitions_classified);
+        assert!(pruned.definitions.is_empty());
     }
 }

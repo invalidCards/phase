@@ -352,15 +352,24 @@ fn color_and_type_replacement_exception_prunes_cdas_for_later_copies() {
 
 /// CR 707.9d + CR 604.3: Croaking Counterpart's green copy-token exception
 /// supplies color, so a copied Devoid CDA is not part of the token's copied
-/// values. A non-Frog Devoid donor is deliberately used: a Changeling is a Frog
-/// and therefore illegal for Croaking Counterpart to target.
+/// values even beside an unrelated, unclassifiable subtype CDA. A non-Frog
+/// Devoid donor is deliberately used: a Changeling is a Frog and therefore
+/// illegal for Croaking Counterpart to target.
 #[test]
-fn croaking_counterpart_copy_token_prunes_devoid_color_cda() {
+fn croaking_counterpart_copy_token_prunes_devoid_beside_unknown_cda() {
     let mut scenario = GameScenario::new();
     scenario.at_phase(Phase::PreCombatMain);
     let donor = {
         let mut builder = scenario.add_creature(P0, "Devoid Donor", 2, 3);
         builder.from_oracle_text_with_keywords(&["Devoid"], DEVOID);
+        builder.with_static_definition(
+            StaticDefinition::continuous()
+                .affected(TargetFilter::SelfRef)
+                .cda()
+                .modifications(vec![ContinuousModification::AddSubtype {
+                    subtype: "Dog".to_string(),
+                }]),
+        );
         builder.id()
     };
     let counterpart = scenario
@@ -397,7 +406,28 @@ fn croaking_counterpart_copy_token_prunes_devoid_color_cda() {
     let token = tokens[0];
     assert_eq!((token.power, token.toughness), (Some(1), Some(1)));
     assert_eq!(token.color, vec![ManaColor::Green]);
-    assert_eq!(token.card_types.subtypes, vec!["Frog"]);
+    assert_eq!(token.card_types.subtypes, vec!["Frog", "Dog"]);
+    assert!(
+        token.base_static_definitions.iter().any(|definition| {
+            definition.characteristic_defining
+                && definition.modifications.iter().any(|modification| {
+                    matches!(
+                        modification,
+                        ContinuousModification::AddSubtype { subtype } if subtype == "Dog"
+                    )
+                })
+        }),
+        "the unclassifiable subtype CDA itself remains in the copied token body"
+    );
+    assert!(
+        !token.base_static_definitions.iter().any(|definition| {
+            definition.characteristic_defining
+                && definition.modifications.iter().any(|modification| {
+                    matches!(modification, ContinuousModification::SetColor { .. })
+                })
+        }),
+        "the independent Devoid color CDA must be pruned from the copied token body"
+    );
 }
 
 /// CR 707.9d + CR 604.3: The Scarab God replaces creature types while making
@@ -622,11 +652,10 @@ fn unsupported_copy_exception_rider_keeps_preceding_subtype_out_of_later_copy() 
     assert_eq!(state.objects[&second].power, Some(2));
 }
 
-/// An unclassifiable CDA must follow the same all-or-nothing fallback: its
-/// functional subtype definition remains copiable, while the noncopiable power
-/// rider does not become part of a later copy's base values.
+/// CR 707.9d: an unclassifiable CDA stays copiable, but it must not prevent a
+/// separate, classifiable P/T CDA from being pruned by the same exception.
 #[test]
-fn unclassifiable_cda_preserves_its_functional_definition_without_power_rider() {
+fn unclassifiable_cda_does_not_preserve_an_independent_overridden_cda() {
     let mut scenario = GameScenario::new();
     let donor = scenario.add_creature(P0, "CDA Donor", 2, 2).id();
     let first = scenario.add_creature(P0, "First CDA Host", 0, 0).id();
@@ -639,12 +668,18 @@ fn unclassifiable_cda_preserves_its_functional_definition_without_power_rider() 
         .modifications(vec![ContinuousModification::AddSubtype {
             subtype: "Dog".to_string(),
         }]);
+    let dynamic_power_cda = StaticDefinition::continuous()
+        .affected(TargetFilter::SelfRef)
+        .cda()
+        .modifications(vec![ContinuousModification::SetDynamicPower {
+            value: QuantityExpr::Fixed { value: 9 },
+        }]);
     let donor_object = state
         .objects
         .get_mut(&donor)
         .expect("scenario donor is on the battlefield");
-    donor_object.static_definitions = vec![dog_cda.clone()].into();
-    donor_object.base_static_definitions = std::sync::Arc::new(vec![dog_cda]);
+    donor_object.static_definitions = vec![dog_cda.clone(), dynamic_power_cda.clone()].into();
+    donor_object.base_static_definitions = std::sync::Arc::new(vec![dog_cda, dynamic_power_cda]);
     state.layers_dirty.mark_full();
     evaluate_layers(&mut state);
 
@@ -665,7 +700,11 @@ fn unclassifiable_cda_preserves_its_functional_definition_without_power_rider() 
         .card_types
         .subtypes
         .contains(&"Dog".to_string()));
-    assert_eq!(state.objects[&second].power, Some(2));
+    assert_eq!(
+        state.objects[&second].power,
+        Some(2),
+        "the unknown subtype CDA must not preserve the separate overridden 9-power CDA"
+    );
 }
 
 /// Resolution-time exceptions are consumed independently of snapshot folding.

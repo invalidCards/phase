@@ -1373,12 +1373,11 @@ pub(crate) fn materialize_token_copy_body(
     // `loyalty`/`base_loyalty` from `values.loyalty` (CR 306.5b), so no separate
     // loyalty seed is needed here.
     let mut values = copy.values.clone();
-    if let Some(pruned_statics) = super::copy_exception::prune_copy_exception_overridden_cdas(
+    let cda_pruning = super::copy_exception::prune_copy_exception_overridden_cdas(
         &values.static_definitions,
         &copy.additional_modifications,
-    ) {
-        values.static_definitions = Arc::new(pruned_statics);
-    }
+    );
+    values.static_definitions = Arc::new(cda_pruning.definitions);
     apply_copiable_values_to_liminal_object(
         object,
         &values,
