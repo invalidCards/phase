@@ -27,8 +27,10 @@ impl CopyExceptionOverrides {
                 // to the copied object's other colors, too (Lazotep Convert).
                 ContinuousModification::AddColor { .. }
                 | ContinuousModification::SetColor { .. } => overrides.color = true,
-                ContinuousModification::SetPower { .. } => overrides.power = true,
-                ContinuousModification::SetToughness { .. } => overrides.toughness = true,
+                ContinuousModification::SetPower { .. }
+                | ContinuousModification::SetPowerDynamic { .. } => overrides.power = true,
+                ContinuousModification::SetToughness { .. }
+                | ContinuousModification::SetToughnessDynamic { .. } => overrides.toughness = true,
                 _ => {}
             }
         }
@@ -91,4 +93,45 @@ fn cda_defined_axes(definition: &StaticDefinition) -> Option<CopyExceptionOverri
         }
     }
     Some(axes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::ability::{QuantityExpr, TargetFilter};
+
+    /// CR 707.9d + CR 613.4a/b: Saw in Half-style dynamic base P/T exceptions
+    /// replace the corresponding value of a copied P/T CDA.
+    #[test]
+    fn dynamic_pt_copy_exception_prunes_corresponding_cda_axes() {
+        let definitions = Arc::new(vec![
+            StaticDefinition::continuous()
+                .affected(TargetFilter::SelfRef)
+                .cda()
+                .modifications(vec![ContinuousModification::SetDynamicPower {
+                    value: QuantityExpr::Fixed { value: 2 },
+                }]),
+            StaticDefinition::continuous()
+                .affected(TargetFilter::SelfRef)
+                .cda()
+                .modifications(vec![ContinuousModification::SetDynamicToughness {
+                    value: QuantityExpr::Fixed { value: 3 },
+                }]),
+        ]);
+
+        let pruned = prune_copy_exception_overridden_cdas(
+            &definitions,
+            &[
+                ContinuousModification::SetPowerDynamic {
+                    value: QuantityExpr::Fixed { value: 1 },
+                },
+                ContinuousModification::SetToughnessDynamic {
+                    value: QuantityExpr::Fixed { value: 1 },
+                },
+            ],
+        )
+        .expect("dynamic P/T CDAs are in the classified vocabulary");
+
+        assert!(pruned.is_empty());
+    }
 }

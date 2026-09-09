@@ -29,6 +29,8 @@ const DEVOID_AND_CHANGELING: &str =
 const CROAKING_COUNTERPART: &str =
     "Create a token that's a copy of target non-Frog creature, except it's a 1/1 green Frog.\nFlashback {3}{G}{U} (You may cast this card from your graveyard for its flashback cost. Then exile it.)";
 const THE_SCARAB_GOD: &str = "At the beginning of your upkeep, each opponent loses X life and you scry X, where X is the number of Zombies you control.\n{2}{U}{B}: Exile target creature card from a graveyard. Create a token that's a copy of it, except it's a 4/4 black Zombie.\nWhen The Scarab God dies, return it to its owner's hand at the beginning of the next end step.";
+const SAW_IN_HALF: &str = "Destroy target creature. If that creature dies this way, its controller creates two tokens that are copies of that creature, except their power is half that creature's power and their toughness is half that creature's toughness. Round up each time.";
+const TARMOGOYF: &str = "Tarmogoyf's power is equal to the number of card types among cards in all graveyards and its toughness is equal to that number plus 1.";
 
 fn copy_exception_modifications(
     oracle: &str,
@@ -445,6 +447,56 @@ fn scarab_god_copy_token_prunes_changeling_type_cda() {
     assert_eq!((token.power, token.toughness), (Some(4), Some(4)));
     assert_eq!(token.color, vec![ManaColor::Black]);
     assert_eq!(token.card_types.subtypes, vec!["Zombie"]);
+}
+
+/// CR 707.9d + CR 613.4a/b: Saw in Half's dynamic P/T exception supplies the
+/// token's values, so a copied Tarmogoyf P/T CDA cannot reassert itself. Its
+/// last-known values before dying are 0/1; once its Creature card reaches a
+/// graveyard, a wrongly copied CDA would instead read 1/2. Each token remains
+/// the correctly rounded 0/1 copy exception.
+#[test]
+fn saw_in_half_copy_tokens_prune_dynamic_pt_cda() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let tarmogoyf = scenario
+        .add_creature_from_oracle(P0, "Tarmogoyf", 0, 1, TARMOGOYF)
+        .id();
+    let saw_in_half = scenario
+        .add_spell_to_hand_from_oracle(P0, "Saw in Half", true, SAW_IN_HALF)
+        .with_mana_cost(ManaCost::Cost {
+            generic: 2,
+            shards: vec![ManaCostShard::Black],
+        })
+        .id();
+    scenario.with_mana_pool(
+        P0,
+        vec![
+            ManaUnit::new(ManaType::Colorless, ObjectId(9_220), false, vec![]),
+            ManaUnit::new(ManaType::Colorless, ObjectId(9_221), false, vec![]),
+            ManaUnit::new(ManaType::Black, ObjectId(9_222), false, vec![]),
+        ],
+    );
+
+    let mut runner = scenario.build();
+    runner.cast(saw_in_half).target_object(tarmogoyf).resolve();
+
+    let tokens: Vec<_> = runner
+        .state()
+        .objects
+        .values()
+        .filter(|object| object.is_token && object.name == "Tarmogoyf")
+        .collect();
+    assert_eq!(
+        tokens.len(),
+        2,
+        "the parsed spell must create two copy tokens"
+    );
+    assert!(
+        tokens
+            .iter()
+            .all(|token| (token.power, token.toughness) == (Some(0), Some(1))),
+        "Saw in Half must retain its dynamic 0/1 exception rather than Tarmogoyf's copied 1/2 CDA: {tokens:?}"
+    );
 }
 
 /// A non-foldable rider must leave *all* layer operations on the first copy;
