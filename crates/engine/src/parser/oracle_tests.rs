@@ -26945,6 +26945,40 @@ fn tornellan_protector_event_relative_formula_is_an_honest_prevent_gap() {
     ));
 }
 
+/// CR 615.1 + CR 615.1a: The production document parser must report the
+/// simple each-time half-damage wording as the same named `prevent` gap. Walk
+/// every nested ability effect so a future partial lowering cannot conceal the
+/// historical `PreventDamage::Next(1)` fallback below a wrapper.
+#[test]
+fn each_time_half_damage_formula_is_an_honest_prevent_gap() {
+    let parsed = parse_oracle_text(
+        "Each time a source would deal damage to you, prevent half that damage.",
+        "Event-Relative Prevention Test",
+        &[],
+        &[],
+        &[],
+    );
+    assert!(
+        unimplemented_keys(&parsed)
+            .iter()
+            .any(|key| key == "prevent"),
+        "the event-relative formula must remain a named prevent gap; keys={:?}",
+        unimplemented_keys(&parsed),
+    );
+    assert!(
+        !collect_all_effects(&parsed.abilities)
+            .iter()
+            .any(|effect| matches!(
+                effect,
+                Effect::PreventDamage {
+                    amount: PreventionAmount::Next(1),
+                    ..
+                }
+            )),
+        "the production parser must not hide the unsupported formula as PreventDamage::Next(1)"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Namor, Atlantean King — the attacked-player predicate (CR 603.2) and the
 // "attacking that player" defending-player anaphor (CR 508.5).

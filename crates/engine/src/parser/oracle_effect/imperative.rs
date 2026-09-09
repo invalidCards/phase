@@ -29,7 +29,9 @@ use crate::parser::oracle_nom::bridge::{nom_on_lower, nom_parse_lower, split_onc
 use crate::parser::oracle_nom::enters_under::{bind_control_clause, name_entry_control_antecedent};
 use crate::parser::oracle_nom::filter as nom_filter;
 use crate::parser::oracle_nom::filter::ControlledPermanentsConjunct;
-use crate::parser::oracle_nom::prevention::has_event_relative_prevention_amount;
+use crate::parser::oracle_nom::prevention::{
+    has_each_time_event_relative_prevention, has_event_relative_prevention_amount,
+};
 use crate::parser::oracle_nom::primitives as nom_primitives;
 use crate::parser::oracle_nom::quantity as nom_quantity;
 use crate::parser::oracle_nom::target as nom_target;
@@ -11086,16 +11088,11 @@ pub(super) fn parse_imperative_family_ast(
         return Some(ImperativeFamilyAst::GainKeyword(effect));
     }
 
-    // A delayed "each time damage is dealt" prevention formula needs both a
-    // repeatable event watcher and a random amount. Neither is carried by the
-    // ordinary one-shot `PreventDamage` effect, so fail at the outer clause
+    // CR 615.1 + CR 615.1a: An each-time prevention formula is a continuous,
+    // repeatable watcher of damage events. The imperative AST cannot represent
+    // that watcher or its event-relative amount, so fail at the outer clause
     // rather than lowering its inner `prevent X` to the Next(1) fallback.
-    if has_event_relative_prevention_amount(lower)
-        && nom_primitives::scan_at_word_boundaries(lower, |input| {
-            tag::<_, _, OracleError<'_>>("each time ").parse(input)
-        })
-        .is_some()
-    {
+    if has_each_time_event_relative_prevention(lower) {
         return Some(ImperativeFamilyAst::GainKeyword(Effect::unimplemented(
             "prevent", text,
         )));
@@ -24660,15 +24657,31 @@ mod tests {
         ));
     }
 
-    /// CR 615.1a: Event-relative formulas need a delayed prevention-event
-    /// representation that this imperative parser does not yet model. Refuse the
-    /// complete Tornellan Protector clause rather than falling through to the
-    /// ordinary `PreventDamage::Next(1)` convenience default.
+    /// CR 615.1 + CR 615.1a: Event-relative formulas need a continuous,
+    /// repeatable prevention-event watcher that this imperative parser does not
+    /// yet model. Refuse the complete Tornellan Protector clause rather than
+    /// falling through to the ordinary `PreventDamage::Next(1)` convenience
+    /// default.
     #[test]
     fn event_relative_prevention_formula_is_unimplemented_in_imperative_dispatch() {
         let text = "Until end of turn, each time damage is dealt to target creature or player, \
                     prevent X of that damage, where X is a number from 1 to 3 chosen at random \
                     each time.";
+        let lower = text.to_lowercase();
+        let parsed = parse_imperative_family_ast(text, &lower, &mut ParseContext::default());
+        assert!(matches!(
+            parsed,
+            Some(ImperativeFamilyAst::GainKeyword(Effect::Unimplemented { name, .. }))
+                if name == "prevent"
+        ));
+    }
+
+    /// The simple half-damage wording takes the same imperative route as the
+    /// fuller Tornellan formula. Keep it as an explicit `prevent` gap until the
+    /// AST can represent the continuous event watcher.
+    #[test]
+    fn each_time_half_damage_formula_is_unimplemented_in_imperative_dispatch() {
+        let text = "Each time a source would deal damage to you, prevent half that damage.";
         let lower = text.to_lowercase();
         let parsed = parse_imperative_family_ast(text, &lower, &mut ParseContext::default());
         assert!(matches!(

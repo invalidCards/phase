@@ -9195,16 +9195,21 @@ fn apply_single_replacement(
     // damage event only on its accepted branch. The shared damage applier reads
     // a definition's direct outcome (amount modification, prevention shield, or
     // redirection shield), so a decline must bypass every such outcome before
-    // that applier runs. `QuantityModification::Prevent` deliberately remains
-    // here too: the Draw applier has the same definition-driven shape, and an
-    // optional draw-skip decline must still deliver the original draw.
+    // that applier runs. The draw-skip shape is similarly direct, but
+    // `QuantityModification::Prevent` is only that shape for a Draw event;
+    // counter prevention must still reach its own applier after a decline.
     if matches!(branch, ReplacementBranch::Decline)
         && repl_def_ref.is_some_and(|repl_def| {
             replacement_mode_is_optional(&repl_def.mode)
-                && (repl_def.quantity_modification == Some(QuantityModification::Prevent)
-                    || (matches!(proposed, ProposedEvent::Damage { .. })
-                        && (repl_def.damage_modification.is_some()
-                            || repl_def.shield_kind.is_shield())))
+                && match &proposed {
+                    ProposedEvent::Draw { .. } => {
+                        repl_def.quantity_modification == Some(QuantityModification::Prevent)
+                    }
+                    ProposedEvent::Damage { .. } => {
+                        repl_def.damage_modification.is_some() || repl_def.shield_kind.is_shield()
+                    }
+                    _ => false,
+                }
         })
     {
         return Ok(proposed);
@@ -20874,6 +20879,40 @@ mod tests {
         } else {
             panic!("expected surviving Draw event after decline");
         }
+    }
+
+    /// The decline bypass is event-specific: `QuantityModification::Prevent`
+    /// means a skipped original draw only for `ProposedEvent::Draw`. An optional
+    /// counter-prevention replacement still uses its AddCounter applier when the
+    /// player takes its decline branch.
+    #[test]
+    fn optional_counter_prevention_decline_reaches_counter_applier() {
+        let source = ObjectId(90);
+        let mut repl = ReplacementDefinition::new(ReplacementEvent::AddCounter)
+            .quantity_modification(QuantityModification::Prevent);
+        repl.mode = ReplacementMode::Optional { decline: None };
+        let mut state = test_state_with_object(source, Zone::Battlefield, vec![repl]);
+        let mut events = Vec::new();
+        let registry = build_replacement_registry();
+        let event = ProposedEvent::AddCounter {
+            placement: CounterPlacement::Player {
+                actor: PlayerId(0),
+                player_id: PlayerId(0),
+                counter_kind: crate::types::player::PlayerCounterKind::Poison,
+            },
+            count: 1,
+            applied: HashSet::new(),
+        };
+
+        let result = apply_single_replacement(
+            &mut state,
+            event,
+            ReplacementId { source, index: 0 },
+            ReplacementBranch::Decline,
+            &registry,
+            &mut events,
+        );
+        assert!(matches!(result, Err(ApplyResult::Prevented)));
     }
 
     #[test]

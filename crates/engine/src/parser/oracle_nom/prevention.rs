@@ -70,6 +70,17 @@ pub fn has_event_relative_prevention_amount(input: &str) -> bool {
     .is_some()
 }
 
+/// Classify an each-time prevention formula that needs a continuous, repeatable
+/// damage-event watcher in addition to its event-relative amount.
+pub fn has_each_time_event_relative_prevention(input: &str) -> bool {
+    has_event_relative_prevention_amount(input)
+        && crate::parser::oracle_nom::primitives::scan_at_word_boundaries(input, |candidate| {
+            tag::<_, _, crate::parser::oracle_nom::error::OracleError<'_>>("each time ")
+                .parse(candidate)
+        })
+        .is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,6 +109,16 @@ mod tests {
             .unwrap()
             .1,
             PreventionFormula::Quantity { .. }
+        ));
+    }
+
+    #[test]
+    fn classifies_each_time_event_relative_prevention() {
+        assert!(has_each_time_event_relative_prevention(
+            "each time a source would deal damage to you, prevent half that damage."
+        ));
+        assert!(!has_each_time_event_relative_prevention(
+            "prevent half that damage, rounded up."
         ));
     }
 }
