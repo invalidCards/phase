@@ -29,6 +29,7 @@ use crate::parser::oracle_nom::bridge::{nom_on_lower, nom_parse_lower, split_onc
 use crate::parser::oracle_nom::enters_under::{bind_control_clause, name_entry_control_antecedent};
 use crate::parser::oracle_nom::filter as nom_filter;
 use crate::parser::oracle_nom::filter::ControlledPermanentsConjunct;
+use crate::parser::oracle_nom::prevention::has_event_relative_prevention_amount;
 use crate::parser::oracle_nom::primitives as nom_primitives;
 use crate::parser::oracle_nom::quantity as nom_quantity;
 use crate::parser::oracle_nom::target as nom_target;
@@ -7007,6 +7008,20 @@ fn parse_prevent_effect(text: &str, parent_target_available: bool) -> Effect {
         .map(|(r, _)| r)
         .unwrap_or(&lower);
 
+    // CR 615.1a + CR 107.1a: an activated/spell prevention clause cannot use
+    // the generic one-damage fallback for an event-relative fraction. Static
+    // replacements lower this grammar through `PreventionFormula`; imperative
+    // routes that lack the required event-relative representation stay visible
+    // as an explicit gap. Leave `X of that damage` to the existing chain-level
+    // fold (Errant Minion / Power Leak), which has the preceding damage event.
+    if has_event_relative_prevention_amount(rest)
+        && nom_primitives::scan_at_word_boundaries(rest, |input| {
+            tag::<_, _, OracleError<'_>>("half that damage").parse(input)
+        })
+        .is_some()
+    {
+        return Effect::unimplemented("prevent", text);
+    }
     // Determine scope: combat damage only vs all damage
     let scope = if nom_primitives::scan_contains(rest, "combat damage") {
         PreventionScope::CombatDamage
@@ -11069,6 +11084,21 @@ pub(super) fn parse_imperative_family_ast(
     // `parse_oneshot_draw_replacement`; on failure it returns `None`.
     if let Some(effect) = crate::parser::oracle_replacement::parse_oneshot_draw_replacement(lower) {
         return Some(ImperativeFamilyAst::GainKeyword(effect));
+    }
+
+    // A delayed "each time damage is dealt" prevention formula needs both a
+    // repeatable event watcher and a random amount. Neither is carried by the
+    // ordinary one-shot `PreventDamage` effect, so fail at the outer clause
+    // rather than lowering its inner `prevent X` to the Next(1) fallback.
+    if has_event_relative_prevention_amount(lower)
+        && nom_primitives::scan_at_word_boundaries(lower, |input| {
+            tag::<_, _, OracleError<'_>>("each time ").parse(input)
+        })
+        .is_some()
+    {
+        return Some(ImperativeFamilyAst::GainKeyword(Effect::unimplemented(
+            "prevent", text,
+        )));
     }
 
     if all_consuming(terminated(parse_note_mana_spent_clause, opt(tag("."))))
@@ -24620,5 +24650,13 @@ mod tests {
             parse_dig_library_owner("your library", &ctx, DigOwnerPhrase::AtOwnerBoundary),
             Some(TargetFilter::Controller)
         );
+    }
+
+    #[test]
+    fn unsupported_event_relative_prevention_never_becomes_next_one_damage() {
+        assert!(matches!(
+            parse_prevent_effect("Prevent half that damage, rounded down.", false),
+            Effect::Unimplemented { .. }
+        ));
     }
 }

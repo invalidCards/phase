@@ -13713,14 +13713,14 @@ fn prevent_all_combat_damage() {
 
 #[test]
 fn prevent_dynamic_amount_where_x_is_counters() {
-    use crate::types::ability::{ObjectScope, PreventionAmount, QuantityExpr, QuantityRef};
+    use crate::types::ability::{
+        CombatDamageScope, DamageModification, DamageTargetFilter, DamageTargetPlayerScope,
+        PreventionFormula, SourceExclusion, TypedFilter,
+    };
     use crate::types::counter::CounterType;
-    // Cover of Winter class: "prevent X … where X is the number of age
-    // counters on this enchantment". The chunk machinery strips the
-    // trailing "where x is …" binding and `apply_where_x_effect_expression`
-    // re-applies it onto `Effect::PreventDamage::amount_dynamic`. Driven
-    // through the full `parse` path because the chunk-level where-X
-    // mechanism does not run inside the single-clause `parse_effect`.
+    // Cover of Winter's static damage prevention installs its own dynamic
+    // `PreventionFormula`; the full parser must retain the creature source,
+    // combat-only scope, and every per-event recipient category.
     let parsed = parse(
         "If a creature would deal combat damage to you and/or one or more creatures \
              you control, prevent X of that damage, where X is the number of age counters \
@@ -13730,26 +13730,38 @@ fn prevent_dynamic_amount_where_x_is_counters() {
         &["Snow", "Enchantment"],
         &[],
     );
-    let prevent = parsed
-        .abilities
-        .iter()
-        .find(|a| matches!(&*a.effect, Effect::PreventDamage { .. }))
-        .expect("expected a PreventDamage ability");
-    match &*prevent.effect {
-        Effect::PreventDamage {
-            amount: PreventionAmount::Next(1),
-            amount_dynamic:
-                Some(QuantityExpr::Ref {
-                    qty:
-                        QuantityRef::CountersOn {
-                            scope: ObjectScope::Source,
-                            counter_type: Some(ct),
-                        },
-                }),
-            ..
-        } => assert_eq!(*ct, CounterType::Age),
-        other => panic!("expected PreventDamage with dynamic age counters, got {other:?}"),
-    }
+    let [replacement] = parsed.replacements.as_slice() else {
+        panic!("expected one Cover of Winter replacement, got {parsed:#?}");
+    };
+    assert_eq!(
+        replacement.combat_scope,
+        Some(CombatDamageScope::CombatOnly)
+    );
+    assert_eq!(
+        replacement.damage_target_filter,
+        Some(DamageTargetFilter::PlayerOrPermanentsControlledBy {
+            player: DamageTargetPlayerScope::Controller,
+            permanent_type: Some(CoreType::Creature),
+            source_scope: SourceExclusion::Include,
+        })
+    );
+    assert_eq!(
+        replacement.damage_source_filter,
+        Some(TargetFilter::Typed(TypedFilter::creature()))
+    );
+    assert!(matches!(
+        &replacement.damage_modification,
+        Some(DamageModification::PreventionMinus {
+            value: PreventionFormula::Quantity {
+                quantity: QuantityExpr::Ref {
+                    qty: QuantityRef::CountersOn {
+                        scope: ObjectScope::Source,
+                        counter_type: Some(CounterType::Age),
+                    },
+                },
+            },
+        })
+    ));
     assert!(
         parsed
             .parse_warnings
