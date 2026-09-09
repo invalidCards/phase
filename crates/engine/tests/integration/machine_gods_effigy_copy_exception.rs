@@ -4,11 +4,17 @@
 //! copied creature's card types; it is not the additive `in addition to its
 //! other types` form used by Copy Artifact and similar cards.
 
+use engine::game::effects::become_copy;
+use engine::game::layers::evaluate_layers;
 use engine::game::mana_abilities::is_mana_ability;
 use engine::game::scenario::{GameScenario, P0};
 use engine::parser::oracle::parse_oracle_text;
-use engine::types::ability::{ContinuousModification, Effect};
+use engine::types::ability::{
+    ContinuousModification, CopyRecipient, Duration, Effect, QuantityExpr, ResolvedAbility,
+    StaticDefinition, TargetFilter, TargetRef,
+};
 use engine::types::card_type::CoreType;
+use engine::types::counter::CounterType;
 use engine::types::identifiers::ObjectId;
 use engine::types::mana::{ManaCost, ManaType, ManaUnit};
 use engine::types::phase::Phase;
@@ -38,6 +44,29 @@ fn copy_exception_modifications(
         panic!("replacement must execute BecomeCopy: {execute:?}");
     };
     additional_modifications.clone()
+}
+
+fn resolve_self_copy(
+    state: &mut engine::types::game_state::GameState,
+    recipient: ObjectId,
+    donor: ObjectId,
+    additional_modifications: Vec<ContinuousModification>,
+) {
+    let ability = ResolvedAbility::new(
+        Effect::BecomeCopy {
+            recipient: CopyRecipient::Source,
+            target: TargetFilter::Any,
+            duration: Some(Duration::Permanent),
+            mana_value_limit: None,
+            additional_modifications,
+        },
+        vec![TargetRef::Object(donor)],
+        recipient,
+        P0,
+    );
+    become_copy::resolve(state, &ability, &mut Vec::new()).expect("copy resolver succeeds");
+    state.layers_dirty.mark_full();
+    evaluate_layers(state);
 }
 
 /// The exact Oracle parser output used by card-data generation must distinguish
@@ -211,4 +240,134 @@ fn copy_artifact_snapshots_effigys_complete_type_replacement() {
             .count_color(ManaType::Blue),
         1
     );
+}
+
+/// A non-foldable rider must leave *all* layer operations on the first copy;
+/// otherwise the preceding foldable rider leaks into a later vanilla copy.
+#[test]
+fn unsupported_copy_exception_rider_keeps_preceding_subtype_out_of_later_copy() {
+    let mut scenario = GameScenario::new();
+    let donor = scenario.add_creature(P0, "Fallback Donor", 2, 2).id();
+    let first = scenario.add_creature(P0, "First Host", 0, 0).id();
+    let second = scenario.add_creature(P0, "Second Host", 0, 0).id();
+    let mut state = scenario.build().state().clone();
+
+    resolve_self_copy(
+        &mut state,
+        first,
+        donor,
+        vec![
+            ContinuousModification::AddSubtype {
+                subtype: "Dog".to_string(),
+            },
+            ContinuousModification::AddPower { value: 3 },
+        ],
+    );
+    assert!(state.objects[&first]
+        .card_types
+        .subtypes
+        .contains(&"Dog".to_string()));
+    assert_eq!(state.objects[&first].power, Some(5));
+
+    resolve_self_copy(&mut state, second, first, Vec::new());
+    assert!(
+        !state.objects[&second]
+            .card_types
+            .subtypes
+            .contains(&"Dog".to_string()),
+        "the unsupported rider must prevent an earlier subtype fold from leaking"
+    );
+    assert_eq!(state.objects[&second].power, Some(2));
+}
+
+/// An unclassifiable CDA must follow the same all-or-nothing fallback: its
+/// functional subtype definition remains copiable, while the noncopiable power
+/// rider does not become part of a later copy's base values.
+#[test]
+fn unclassifiable_cda_preserves_its_functional_definition_without_power_rider() {
+    let mut scenario = GameScenario::new();
+    let donor = scenario.add_creature(P0, "CDA Donor", 2, 2).id();
+    let first = scenario.add_creature(P0, "First CDA Host", 0, 0).id();
+    let second = scenario.add_creature(P0, "Second CDA Host", 0, 0).id();
+    let mut state = scenario.build().state().clone();
+
+    let dog_cda = StaticDefinition::continuous()
+        .affected(TargetFilter::SelfRef)
+        .cda()
+        .modifications(vec![ContinuousModification::AddSubtype {
+            subtype: "Dog".to_string(),
+        }]);
+    let donor_object = state
+        .objects
+        .get_mut(&donor)
+        .expect("scenario donor is on the battlefield");
+    donor_object.static_definitions = vec![dog_cda.clone()].into();
+    donor_object.base_static_definitions = std::sync::Arc::new(vec![dog_cda]);
+    state.layers_dirty.mark_full();
+    evaluate_layers(&mut state);
+
+    resolve_self_copy(
+        &mut state,
+        first,
+        donor,
+        vec![ContinuousModification::SetPower { value: 7 }],
+    );
+    assert!(state.objects[&first]
+        .card_types
+        .subtypes
+        .contains(&"Dog".to_string()));
+    assert_eq!(state.objects[&first].power, Some(7));
+
+    resolve_self_copy(&mut state, second, first, Vec::new());
+    assert!(state.objects[&second]
+        .card_types
+        .subtypes
+        .contains(&"Dog".to_string()));
+    assert_eq!(state.objects[&second].power, Some(2));
+}
+
+/// Resolution-time exceptions are consumed independently of snapshot folding.
+/// The first copy receives each exception, while the later vanilla copy sees
+/// only the permanent no-cost and starting-loyalty values.
+#[test]
+fn resolution_time_copy_exceptions_survive_layered_fallback_without_leaking_riders() {
+    let mut scenario = GameScenario::new();
+    let donor = scenario
+        .add_creature(P0, "Resolution Donor", 2, 2)
+        .with_mana_cost(ManaCost::generic(3))
+        .id();
+    let first = scenario
+        .add_creature(P0, "First Resolution Host", 0, 0)
+        .id();
+    let second = scenario
+        .add_creature(P0, "Second Resolution Host", 0, 0)
+        .id();
+    let mut state = scenario.build().state().clone();
+    let charge = CounterType::Generic("charge".to_string());
+
+    resolve_self_copy(
+        &mut state,
+        first,
+        donor,
+        vec![
+            ContinuousModification::RemoveManaCost,
+            ContinuousModification::SetStartingLoyalty { value: 7 },
+            ContinuousModification::AddCounterOnEnter {
+                counter_type: charge.clone(),
+                count: QuantityExpr::Fixed { value: 1 },
+                if_type: Some(CoreType::Creature),
+            },
+            ContinuousModification::AddPower { value: 3 },
+        ],
+    );
+    assert_eq!(state.objects[&first].mana_cost, ManaCost::NoCost);
+    assert_eq!(state.objects[&first].loyalty, Some(7));
+    assert_eq!(state.objects[&first].power, Some(5));
+    assert_eq!(state.objects[&first].counters.get(&charge), Some(&1));
+
+    resolve_self_copy(&mut state, second, first, Vec::new());
+    assert_eq!(state.objects[&second].mana_cost, ManaCost::NoCost);
+    assert_eq!(state.objects[&second].loyalty, Some(7));
+    assert_eq!(state.objects[&second].power, Some(2));
+    assert_eq!(state.objects[&second].counters.get(&charge), None);
 }
