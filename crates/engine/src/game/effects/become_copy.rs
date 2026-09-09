@@ -194,6 +194,22 @@ pub(crate) fn apply_precomputed_copy_values(
         .filter_map(|(modification, operation)| operation.legacy_modification(modification))
         .collect();
 
+    // CR 707.9d: A supplied characteristic excludes the copied CDA that
+    // defines it, even when another exception rider must remain layered. This
+    // pruning is independent of snapshot folding: a mixed exception such as a
+    // name change plus a dynamic P/T value cannot fold all of its riders, but
+    // a subsequent copy must still not inherit the source P/T CDA.
+    let cda_pruning_succeeded = if let Some(pruned_statics) =
+        super::copy_exception::prune_copy_exception_overridden_cdas(
+            &values.static_definitions,
+            &additional_modifications,
+        ) {
+        values.static_definitions = std::sync::Arc::new(pruned_statics);
+        true
+    } else {
+        false
+    };
+
     // CR 707.9a + CR 707.9b: Ability grants and characteristic modifications
     // made during copying become copiable values. The layer pipeline used to
     // install these riders after `CopyValues`; that realizes the first copy
@@ -202,13 +218,15 @@ pub(crate) fn apply_precomputed_copy_values(
     // `CopyValues` payload instead. This is deliberately all-or-nothing: an
     // unfamiliar modification keeps the historical layered representation,
     // rather than making a partial snapshot with silently different semantics.
-    let folded = fold_admitted_copy_exceptions_into_values(
-        &mut values,
-        state.objects.get(&source_id),
-        &layered_operations,
-        &additional_modifications,
-        &state.all_creature_types,
-    );
+    // If CDA classification failed, retain that same fallback so a source
+    // definition is never selectively discarded.
+    let folded = cda_pruning_succeeded
+        && fold_admitted_copy_exceptions_into_values(
+            &mut values,
+            state.objects.get(&source_id),
+            &layered_operations,
+            &state.all_creature_types,
+        );
 
     let mut modifications = vec![ContinuousModification::CopyValues {
         values: Box::new(values),
@@ -328,7 +346,6 @@ fn fold_admitted_copy_exceptions_into_values(
     values: &mut CopiableValues,
     source: Option<&crate::game::game_object::GameObject>,
     operations: &[CopyExceptionOperation<'_>],
-    additional_modifications: &[ContinuousModification],
     all_creature_types: &[String],
 ) -> bool {
     let Some(foldable_operations) = operations
@@ -341,16 +358,6 @@ fn fold_admitted_copy_exceptions_into_values(
     };
 
     let mut candidate = values.clone();
-    let Some(pruned_statics) = super::copy_exception::prune_copy_exception_overridden_cdas(
-        &candidate.static_definitions,
-        additional_modifications,
-    ) else {
-        // An unknown CDA shape must never cause us to discard a source's
-        // characteristic-defining ability.  Leave every rider layered instead.
-        return false;
-    };
-    candidate.static_definitions = std::sync::Arc::new(pruned_statics);
-
     for operation in foldable_operations {
         operation.apply(&mut candidate, source, all_creature_types);
     }

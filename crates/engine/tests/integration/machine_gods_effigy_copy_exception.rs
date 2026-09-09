@@ -10,8 +10,8 @@ use engine::game::mana_abilities::is_mana_ability;
 use engine::game::scenario::{GameScenario, P0};
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{
-    ContinuousModification, CopyRecipient, Duration, Effect, QuantityExpr, ResolvedAbility,
-    StaticDefinition, TargetFilter, TargetRef,
+    AbilityDefinition, AbilityKind, ContinuousModification, CopyRecipient, Duration, Effect,
+    QuantityExpr, ResolvedAbility, StaticDefinition, TargetFilter, TargetRef, TypedFilter,
 };
 use engine::types::card_type::CoreType;
 use engine::types::counter::CounterType;
@@ -496,6 +496,91 @@ fn saw_in_half_copy_tokens_prune_dynamic_pt_cda() {
             .iter()
             .all(|token| (token.power, token.toughness) == (Some(0), Some(1))),
         "Saw in Half must retain its dynamic 0/1 exception rather than Tarmogoyf's copied 1/2 CDA: {tokens:?}"
+    );
+}
+
+/// CR 707.9d: CDA pruning is not contingent on being able to fold every copy
+/// exception rider. This uses the normal activation/target/stack pipeline for
+/// a mixed exception: the name is foldable, while dynamic P/T stays layered.
+/// The first copy gets its 1/1 exception; a later vanilla copy cannot inherit
+/// Tarmogoyf's P/T CDA, which would otherwise read 1/2 with the staged card in
+/// a graveyard.
+#[test]
+fn mixed_copy_exception_prunes_cda_through_stack_resolution() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    scenario.add_spell_to_graveyard(P0, "Evidence", true);
+    let donor = scenario
+        .add_creature_from_oracle(P0, "Tarmogoyf", 0, 1, TARMOGOYF)
+        .id();
+    let first = scenario
+        .add_creature(P0, "First Mixed Host", 1, 1)
+        .with_ability_definition(AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::BecomeCopy {
+                recipient: CopyRecipient::Source,
+                target: TargetFilter::Typed(TypedFilter::creature()),
+                duration: Some(Duration::Permanent),
+                mana_value_limit: None,
+                additional_modifications: vec![
+                    ContinuousModification::SetName {
+                        name: "Mixed Copy".to_string(),
+                    },
+                    ContinuousModification::SetPowerDynamic {
+                        value: QuantityExpr::Fixed { value: 1 },
+                    },
+                    ContinuousModification::SetToughnessDynamic {
+                        value: QuantityExpr::Fixed { value: 1 },
+                    },
+                ],
+            },
+        ))
+        .id();
+    let second = scenario
+        .add_creature(P0, "Second Mixed Host", 1, 1)
+        .with_ability_definition(AbilityDefinition::new(
+            AbilityKind::Activated,
+            Effect::BecomeCopy {
+                recipient: CopyRecipient::Source,
+                target: TargetFilter::Typed(TypedFilter::creature()),
+                duration: Some(Duration::Permanent),
+                mana_value_limit: None,
+                additional_modifications: Vec::new(),
+            },
+        ))
+        .id();
+
+    let mut runner = scenario.build();
+    runner.state_mut().layers_dirty.mark_full();
+    evaluate_layers(runner.state_mut());
+    assert_eq!(
+        (
+            runner.state().objects[&donor].power,
+            runner.state().objects[&donor].toughness,
+        ),
+        (Some(1), Some(2)),
+        "the parsed Tarmogoyf donor's live CDA must establish this regression's distinction"
+    );
+
+    runner.activate(first, 0).target_object(donor).resolve();
+    assert_eq!(runner.state().objects[&first].name, "Mixed Copy");
+    assert_eq!(
+        (
+            runner.state().objects[&first].power,
+            runner.state().objects[&first].toughness,
+        ),
+        (Some(1), Some(1)),
+        "the first copy must retain its layered dynamic P/T exception"
+    );
+
+    runner.activate(second, 0).target_object(first).resolve();
+    assert_eq!(
+        (
+            runner.state().objects[&second].power,
+            runner.state().objects[&second].toughness,
+        ),
+        (Some(0), Some(1)),
+        "the later vanilla copy must not reacquire the donor's 1/2 Tarmogoyf CDA"
     );
 }
 
