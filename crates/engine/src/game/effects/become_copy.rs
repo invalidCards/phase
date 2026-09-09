@@ -206,6 +206,7 @@ pub(crate) fn apply_precomputed_copy_values(
         &mut values,
         state.objects.get(&source_id),
         &layered_operations,
+        &additional_modifications,
         &state.all_creature_types,
     );
 
@@ -327,6 +328,7 @@ fn fold_admitted_copy_exceptions_into_values(
     values: &mut CopiableValues,
     source: Option<&crate::game::game_object::GameObject>,
     operations: &[CopyExceptionOperation<'_>],
+    additional_modifications: &[ContinuousModification],
     all_creature_types: &[String],
 ) -> bool {
     let Some(foldable_operations) = operations
@@ -338,10 +340,11 @@ fn fold_admitted_copy_exceptions_into_values(
         return false;
     };
 
-    let overrides = CopyExceptionOverrides::from_foldable_operations(&foldable_operations);
     let mut candidate = values.clone();
-    let Some(pruned_statics) = prune_overridden_cdas(&candidate.static_definitions, overrides)
-    else {
+    let Some(pruned_statics) = super::copy_exception::prune_copy_exception_overridden_cdas(
+        &candidate.static_definitions,
+        additional_modifications,
+    ) else {
         // An unknown CDA shape must never cause us to discard a source's
         // characteristic-defining ability.  Leave every rider layered instead.
         return false;
@@ -718,94 +721,6 @@ impl FoldableCopyException<'_> {
             }
         }
     }
-}
-
-#[derive(Clone, Copy, Default)]
-struct CopyExceptionOverrides {
-    card_types: bool,
-    color: bool,
-    power: bool,
-    toughness: bool,
-}
-
-impl CopyExceptionOverrides {
-    fn from_foldable_operations(modifications: &[FoldableCopyException<'_>]) -> Self {
-        let mut overrides = Self::default();
-        for modification in modifications {
-            match modification {
-                FoldableCopyException::SetCardTypes { .. } => overrides.card_types = true,
-                FoldableCopyException::RemoveAllSubtypes { .. } => overrides.card_types = true,
-                FoldableCopyException::AddColor { .. } => overrides.color = true,
-                FoldableCopyException::SetColor { .. } => overrides.color = true,
-                FoldableCopyException::SetPower { .. } => overrides.power = true,
-                FoldableCopyException::SetToughness { .. } => overrides.toughness = true,
-                FoldableCopyException::SetName { .. }
-                | FoldableCopyException::AddKeyword { .. }
-                | FoldableCopyException::GrantAbility { .. }
-                | FoldableCopyException::GrantTrigger { .. }
-                | FoldableCopyException::AddType { .. }
-                | FoldableCopyException::AddSubtype { .. }
-                | FoldableCopyException::GrantStaticAbility { .. }
-                | FoldableCopyException::RetainPrintedTriggerFromSource { .. }
-                | FoldableCopyException::RetainPrintedAbilityFromSource { .. }
-                | FoldableCopyException::RetainAllOtherAbilitiesFromSource
-                | FoldableCopyException::AddSupertype { .. }
-                | FoldableCopyException::RemoveSupertype { .. } => {}
-            }
-        }
-        overrides
-    }
-}
-
-/// Returns `None` when a CDA shape is not one this snapshot fold can classify.
-///
-/// CR 707.9d: a copy exception does not copy a source CDA that defines a
-/// characteristic the exception overrides.  We classify the small, typed CDA
-/// vocabulary presently produced by the card database; future shapes take the
-/// all-or-nothing legacy path instead of risking an over-broad deletion.
-fn prune_overridden_cdas(
-    definitions: &std::sync::Arc<Vec<StaticDefinition>>,
-    overrides: CopyExceptionOverrides,
-) -> Option<Vec<StaticDefinition>> {
-    let mut retained = Vec::with_capacity(definitions.len());
-    for definition in definitions.iter() {
-        if !definition.characteristic_defining {
-            retained.push(definition.clone());
-            continue;
-        }
-        let axes = cda_defined_axes(definition)?;
-        let overridden = (axes.card_types && overrides.card_types)
-            || (axes.color && overrides.color)
-            || (axes.power && overrides.power)
-            || (axes.toughness && overrides.toughness);
-        if !overridden {
-            retained.push(definition.clone());
-        }
-    }
-    Some(retained)
-}
-
-/// A CDA definition is only safely removable as a whole when every one of its
-/// modifications is in the known characteristic-defining vocabulary.  Fixed
-/// P/T pair definitions report both axes, so either explicit P/T exception
-/// supersedes that definition's corresponding characteristic.
-fn cda_defined_axes(definition: &StaticDefinition) -> Option<CopyExceptionOverrides> {
-    let mut axes = CopyExceptionOverrides::default();
-    for modification in &definition.modifications {
-        match modification {
-            ContinuousModification::AddAllCreatureTypes => axes.card_types = true,
-            ContinuousModification::SetDynamicPower { .. }
-            | ContinuousModification::SetPower { .. } => axes.power = true,
-            ContinuousModification::SetDynamicToughness { .. }
-            | ContinuousModification::SetToughness { .. } => axes.toughness = true,
-            // CR 707.9d: an exception that supplies a color does not copy the
-            // source CDA defining color, even when the exception adds that
-            // color in addition to the source's other colors.
-            ContinuousModification::SetColor { .. } => axes.color = true,
-            _ => return None,
-        }
-    }
-    Some(axes)
 }
 
 fn apply_copy_values_to_recipients(

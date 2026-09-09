@@ -1372,9 +1372,16 @@ pub(crate) fn materialize_token_copy_body(
     // itself copiable. `install_copiable_values_as_base` already installs
     // `loyalty`/`base_loyalty` from `values.loyalty` (CR 306.5b), so no separate
     // loyalty seed is needed here.
+    let mut values = copy.values.clone();
+    if let Some(pruned_statics) = super::copy_exception::prune_copy_exception_overridden_cdas(
+        &values.static_definitions,
+        &copy.additional_modifications,
+    ) {
+        values.static_definitions = Arc::new(pruned_statics);
+    }
     apply_copiable_values_to_liminal_object(
         object,
-        &copy.values,
+        &values,
         copy.display_source,
         copy.printed_ref.clone(),
         copy.token_image_ref.clone(),

@@ -16,7 +16,7 @@ use engine::types::ability::{
 use engine::types::card_type::CoreType;
 use engine::types::counter::CounterType;
 use engine::types::identifiers::ObjectId;
-use engine::types::mana::{ManaColor, ManaCost, ManaType, ManaUnit};
+use engine::types::mana::{ManaColor, ManaCost, ManaCostShard, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 
 const MACHINE_GODS_EFFIGY: &str = "You may have this artifact enter as a copy of any creature on the battlefield, except it's an artifact and it has \"{T}: Add {U}.\" (It's not a creature.)\n{T}: Add {U}.";
@@ -26,6 +26,9 @@ const COLOR_REPLACEMENT_EXCEPTION: &str = "You may have this creature enter as a
 const DEVOID: &str = "Devoid (This card has no color.)";
 const DEVOID_AND_CHANGELING: &str =
     "Devoid (This card has no color.)\nChangeling (This card is every creature type.)";
+const CROAKING_COUNTERPART: &str =
+    "Create a token that's a copy of target non-Frog creature, except it's a 1/1 green Frog.\nFlashback {3}{G}{U} (You may cast this card from your graveyard for its flashback cost. Then exile it.)";
+const THE_SCARAB_GOD: &str = "At the beginning of your upkeep, each opponent loses X life and you scry X, where X is the number of Zombies you control.\n{2}{U}{B}: Exile target creature card from a graveyard. Create a token that's a copy of it, except it's a 4/4 black Zombie.\nWhen The Scarab God dies, return it to its owner's hand at the beginning of the next end step.";
 
 fn copy_exception_modifications(
     oracle: &str,
@@ -343,6 +346,105 @@ fn color_and_type_replacement_exception_prunes_cdas_for_later_copies() {
         vec!["Zombie"],
         "a later copy must snapshot the type replacement, not Changeling's CDA"
     );
+}
+
+/// CR 707.9d + CR 604.3: Croaking Counterpart's green copy-token exception
+/// supplies color, so a copied Devoid CDA is not part of the token's copied
+/// values. A non-Frog Devoid donor is deliberately used: a Changeling is a Frog
+/// and therefore illegal for Croaking Counterpart to target.
+#[test]
+fn croaking_counterpart_copy_token_prunes_devoid_color_cda() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let donor = {
+        let mut builder = scenario.add_creature(P0, "Devoid Donor", 2, 3);
+        builder.from_oracle_text_with_keywords(&["Devoid"], DEVOID);
+        builder.id()
+    };
+    let counterpart = scenario
+        .add_spell_to_hand_from_oracle(P0, "Croaking Counterpart", false, CROAKING_COUNTERPART)
+        .with_mana_cost(ManaCost::Cost {
+            generic: 2,
+            shards: vec![ManaCostShard::Green, ManaCostShard::Blue],
+        })
+        .id();
+    scenario.with_mana_pool(
+        P0,
+        vec![
+            ManaUnit::new(ManaType::Colorless, ObjectId(9_200), false, vec![]),
+            ManaUnit::new(ManaType::Colorless, ObjectId(9_201), false, vec![]),
+            ManaUnit::new(ManaType::Green, ObjectId(9_202), false, vec![]),
+            ManaUnit::new(ManaType::Blue, ObjectId(9_203), false, vec![]),
+        ],
+    );
+
+    let mut runner = scenario.build();
+    runner.cast(counterpart).target_object(donor).resolve();
+
+    let tokens: Vec<_> = runner
+        .state()
+        .objects
+        .values()
+        .filter(|object| object.is_token && object.name == "Devoid Donor")
+        .collect();
+    assert_eq!(
+        tokens.len(),
+        1,
+        "the parsed spell must create one copy token"
+    );
+    let token = tokens[0];
+    assert_eq!((token.power, token.toughness), (Some(1), Some(1)));
+    assert_eq!(token.color, vec![ManaColor::Green]);
+    assert_eq!(token.card_types.subtypes, vec!["Frog"]);
+}
+
+/// CR 707.9d + CR 604.3: The Scarab God replaces creature types while making
+/// its copy token, so a copied Changeling CDA cannot overwrite the Zombie
+/// subtype. Unlike Croaking Counterpart, this real card can legally target a
+/// Changeling creature card in a graveyard.
+#[test]
+fn scarab_god_copy_token_prunes_changeling_type_cda() {
+    let mut scenario = GameScenario::new();
+    scenario.at_phase(Phase::PreCombatMain);
+    let donor = {
+        let mut builder = scenario.add_creature_to_graveyard(P0, "Changeling Donor", 2, 3);
+        builder.from_oracle_text_with_keywords(&["Changeling"], "Changeling");
+        builder.id()
+    };
+    let scarab_god = scenario
+        .add_creature_from_oracle(P0, "The Scarab God", 5, 5, THE_SCARAB_GOD)
+        .id();
+    scenario.with_mana_pool(
+        P0,
+        vec![
+            ManaUnit::new(ManaType::Colorless, ObjectId(9_210), false, vec![]),
+            ManaUnit::new(ManaType::Colorless, ObjectId(9_211), false, vec![]),
+            ManaUnit::new(ManaType::Blue, ObjectId(9_212), false, vec![]),
+            ManaUnit::new(ManaType::Black, ObjectId(9_213), false, vec![]),
+        ],
+    );
+
+    let mut runner = scenario.build();
+    runner
+        .activate(scarab_god, 0)
+        .target_object(donor)
+        .resolve();
+
+    let tokens: Vec<_> = runner
+        .state()
+        .objects
+        .values()
+        .filter(|object| object.is_token && object.name == "Changeling Donor")
+        .collect();
+    assert_eq!(
+        tokens.len(),
+        1,
+        "the parsed activation must create one copy token"
+    );
+    let token = tokens[0];
+    assert_eq!((token.power, token.toughness), (Some(4), Some(4)));
+    assert_eq!(token.color, vec![ManaColor::Black]);
+    assert_eq!(token.card_types.subtypes, vec!["Zombie"]);
 }
 
 /// A non-foldable rider must leave *all* layer operations on the first copy;
