@@ -22,7 +22,10 @@ use engine::types::phase::Phase;
 const MACHINE_GODS_EFFIGY: &str = "You may have this artifact enter as a copy of any creature on the battlefield, except it's an artifact and it has \"{T}: Add {U}.\" (It's not a creature.)\n{T}: Add {U}.";
 const COPY_ARTIFACT: &str = "You may have this enchantment enter as a copy of any artifact on the battlefield, except it's an enchantment in addition to its other types.";
 const LAZOTEP_CONVERT: &str = "You may have this creature enter as a copy of any creature card in a graveyard, except it's a 4/4 black Zombie in addition to its other colors and types.";
+const COLOR_REPLACEMENT_EXCEPTION: &str = "You may have this creature enter as a copy of any creature on the battlefield, except it's a 4/4 white Zombie.";
 const DEVOID: &str = "Devoid (This card has no color.)";
+const DEVOID_AND_CHANGELING: &str =
+    "Devoid (This card has no color.)\nChangeling (This card is every creature type.)";
 
 fn copy_exception_modifications(
     oracle: &str,
@@ -292,6 +295,54 @@ fn lazotep_convert_color_exception_does_not_copy_devoid_cda() {
     assert_eq!((copied.power, copied.toughness), (Some(4), Some(4)));
     assert!(copied.card_types.subtypes.contains(&"Zombie".to_string()));
     assert_eq!(copied.color, vec![ManaColor::Black]);
+}
+
+/// CR 707.9b/d + CR 604.3: replacing color and creature types are copiable copy
+/// exceptions. A later vanilla copy must see the exception's white Zombie values
+/// rather than the original Devoid and Changeling CDAs.
+#[test]
+fn color_and_type_replacement_exception_prunes_cdas_for_later_copies() {
+    let mut scenario = GameScenario::new();
+    let donor = {
+        let mut builder = scenario.add_creature(P0, "Devoid Donor", 2, 3);
+        builder.from_oracle_text_with_keywords(&["Devoid", "Changeling"], DEVOID_AND_CHANGELING);
+        builder.id()
+    };
+    let first = scenario.add_creature(P0, "First Host", 0, 0).id();
+    let second = scenario.add_creature(P0, "Second Host", 0, 0).id();
+    let mut state = scenario.build().state().clone();
+
+    let modifications = copy_exception_modifications(
+        COLOR_REPLACEMENT_EXCEPTION,
+        "Color Replacement",
+        &["Creature".to_string()],
+    );
+    assert!(
+        modifications.contains(&ContinuousModification::SetColor {
+            colors: vec![ManaColor::White],
+        }),
+        "a non-additive color exception must reach the typed SetColor form: {modifications:?}"
+    );
+
+    resolve_self_copy(&mut state, first, donor, modifications);
+    assert_eq!(state.objects[&first].color, vec![ManaColor::White]);
+    assert_eq!(
+        state.objects[&first].card_types.subtypes,
+        vec!["Zombie"],
+        "the replacement must suppress Changeling's type CDA"
+    );
+
+    resolve_self_copy(&mut state, second, first, Vec::new());
+    assert_eq!(
+        state.objects[&second].color,
+        vec![ManaColor::White],
+        "a later copy must snapshot the color replacement, not Devoid's CDA"
+    );
+    assert_eq!(
+        state.objects[&second].card_types.subtypes,
+        vec!["Zombie"],
+        "a later copy must snapshot the type replacement, not Changeling's CDA"
+    );
 }
 
 /// A non-foldable rider must leave *all* layer operations on the first copy;

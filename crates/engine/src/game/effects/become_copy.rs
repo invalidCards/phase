@@ -1,6 +1,8 @@
 use crate::game::filter::{matches_target_filter, FilterContext};
 use crate::game::game_object::DisplaySource;
-use crate::game::layers::{compute_current_copiable_values, subtype_matches_core_types};
+use crate::game::layers::{
+    compute_current_copiable_values, remove_subtype_set, subtype_matches_core_types,
+};
 use crate::game::printed_cards::ensure_keyword_triggers_for_copiable_values;
 use crate::types::ability::{
     ContinuousModification, CopiableValues, CopyRecipient, Duration, Effect, EffectError,
@@ -391,7 +393,6 @@ impl<'a> CopyExceptionOperation<'a> {
             | ContinuousModification::RemoveAllAbilities
             | ContinuousModification::RemoveType { .. }
             | ContinuousModification::RemoveSubtype { .. }
-            | ContinuousModification::RemoveAllSubtypes { .. }
             | ContinuousModification::SetDynamicPower { .. }
             | ContinuousModification::SetDynamicToughness { .. }
             | ContinuousModification::SetPowerDynamic { .. }
@@ -407,7 +408,6 @@ impl<'a> CopyExceptionOperation<'a> {
             | ContinuousModification::AddChosenColor { .. }
             | ContinuousModification::RemoveChosenKeyword
             | ContinuousModification::AddChosenKeyword
-            | ContinuousModification::SetColor { .. }
             | ContinuousModification::AddStaticMode { .. }
             | ContinuousModification::SwitchPowerToughness
             | ContinuousModification::AssignDamageFromToughness
@@ -444,8 +444,14 @@ impl<'a> CopyExceptionOperation<'a> {
             ContinuousModification::SetCardTypes { core_types } => {
                 Self::Fold(FoldableCopyException::SetCardTypes { core_types })
             }
+            ContinuousModification::RemoveAllSubtypes { set } => {
+                Self::Fold(FoldableCopyException::RemoveAllSubtypes { set })
+            }
             ContinuousModification::AddColor { color } => {
                 Self::Fold(FoldableCopyException::AddColor { color })
+            }
+            ContinuousModification::SetColor { colors } => {
+                Self::Fold(FoldableCopyException::SetColor { colors })
             }
             ContinuousModification::GrantStaticAbility { definition } => {
                 Self::Fold(FoldableCopyException::GrantStaticAbility { definition })
@@ -547,8 +553,14 @@ enum FoldableCopyException<'a> {
     SetCardTypes {
         core_types: &'a Vec<crate::types::card_type::CoreType>,
     },
+    RemoveAllSubtypes {
+        set: &'a crate::types::card_type::SubtypeSet,
+    },
     AddColor {
         color: &'a crate::types::mana::ManaColor,
+    },
+    SetColor {
+        colors: &'a Vec<crate::types::mana::ManaColor>,
     },
     GrantStaticAbility {
         definition: &'a StaticDefinition,
@@ -622,11 +634,15 @@ impl FoldableCopyException<'_> {
                     subtype_matches_core_types(subtype, core_types, all_creature_types)
                 });
             }
+            Self::RemoveAllSubtypes { set } => {
+                remove_subtype_set(&mut values.card_types.subtypes, *set, all_creature_types);
+            }
             Self::AddColor { color } => {
                 if !values.color.contains(color) {
                     values.color.push(*color);
                 }
             }
+            Self::SetColor { colors } => values.color = colors.clone(),
             Self::GrantStaticAbility { definition } => {
                 let statics = std::sync::Arc::make_mut(&mut values.static_definitions);
                 if !statics.contains(definition) {
@@ -718,7 +734,9 @@ impl CopyExceptionOverrides {
         for modification in modifications {
             match modification {
                 FoldableCopyException::SetCardTypes { .. } => overrides.card_types = true,
+                FoldableCopyException::RemoveAllSubtypes { .. } => overrides.card_types = true,
                 FoldableCopyException::AddColor { .. } => overrides.color = true,
+                FoldableCopyException::SetColor { .. } => overrides.color = true,
                 FoldableCopyException::SetPower { .. } => overrides.power = true,
                 FoldableCopyException::SetToughness { .. } => overrides.toughness = true,
                 FoldableCopyException::SetName { .. }
