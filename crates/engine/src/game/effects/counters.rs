@@ -2756,6 +2756,67 @@ fn counter_transfer_source_counters(
         .collect()
 }
 
+/// CR 122.5 + CR 608.2d: an optional fixed stack-target counter move is
+/// impossible only when the resolver's own source/destination/counter census
+/// cannot produce a positive valid commit. This deliberately does not predict
+/// replacement effects or interactive move-selection modes; those remain
+/// offerable rather than being incorrectly suppressed.
+pub(crate) fn move_counters_optional_is_infeasible(
+    state: &GameState,
+    ability: &ResolvedAbility,
+) -> bool {
+    let Effect::MoveCounters {
+        source,
+        counter_type,
+        count,
+        mode: CounterTransferMode::Move,
+        selection: CounterMoveSelection::StackTarget,
+        target,
+    } = &ability.effect
+    else {
+        return false;
+    };
+
+    let transfer_limit = count
+        .as_ref()
+        .map(|expr| crate::game::quantity::resolve_quantity_with_targets(state, expr, ability))
+        .map(|value| value.max(0) as u32);
+    if transfer_limit == Some(0) {
+        return true;
+    }
+
+    let source_ids = resolve_counter_transfer_sources(state, ability, source);
+    let destination_ids = resolve_counter_transfer_destinations(state, ability, source, target);
+    let Some(destination_id) = destination_ids.first().copied() else {
+        return true;
+    };
+    let has_committable_move = source_ids.into_iter().any(|source_id| {
+        counter_transfer_source_counters(
+            state,
+            source_id,
+            CounterTransferMode::Move,
+            counter_type.as_ref(),
+        )
+        .into_iter()
+        .any(|(counter_type, available)| {
+            let count = transfer_limit.map_or(available, |limit| limit.min(available));
+            counter_move_commit_is_valid(
+                state,
+                &PendingCounterMove {
+                    actor: ability.controller,
+                    source_id,
+                    destination_id,
+                    counter_type,
+                    remove_count: count,
+                    add_count: count,
+                },
+            )
+        })
+    });
+
+    !has_committable_move
+}
+
 fn counter_count(state: &GameState, object_id: ObjectId, counter_type: &CounterType) -> u32 {
     state
         .objects
@@ -3147,6 +3208,206 @@ mod tests {
             ObjectId(100),
             PlayerId(0),
         )
+    }
+
+    /// Non-blocking item 5 (review round on PR #8494, matthewevans): Hangarback
+    /// Assembler ("When this artifact enters, conjure a card named Hangarback
+    /// Walker onto the battlefield, then put a +1/+1 counter on it.") was
+    /// pinned at the AST level only (`counter_anaphor_after_conjure_binds_last_created`
+    /// in `parser::oracle_effect::tests`, which asserts `target ==
+    /// TargetFilter::LastCreated` but never resolves it). This test drives the
+    /// REAL resolvers end to end: a real `Effect::Conjure` produces the actual
+    /// Hangarback Walker object, and a real `Effect::PutCounter { target:
+    /// LastCreated }` is resolved against it via `resolve_add` — mirroring
+    /// `perpetual_grant_after_conjure_installs_on_conjured_object_not_source`
+    /// (`effects/perpetual.rs`), the identical LastCreated-runtime-resolution
+    /// pattern for a perpetual grant instead of a counter placement.
+    #[test]
+    fn hangarback_assembler_counter_after_conjure_lands_on_walker_not_source() {
+        use crate::types::ability::{ConjureCard, ConjureSource};
+
+        let mut state = GameState::new_two_player(7);
+        let source_id = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Hangarback Assembler".to_string(),
+            Zone::Battlefield,
+        );
+
+        let conjure_ability = ResolvedAbility::new(
+            Effect::Conjure {
+                cards: vec![ConjureCard {
+                    source: ConjureSource::Named {
+                        name: "Hangarback Walker".to_string(),
+                    },
+                    count: QuantityExpr::Fixed { value: 1 },
+                }],
+                destination: Zone::Battlefield,
+                tapped: false,
+                library_position: None,
+                library_players: None,
+            },
+            vec![],
+            source_id,
+            PlayerId(0),
+        );
+        let mut events = Vec::new();
+        crate::game::effects::conjure::resolve(&mut state, &conjure_ability, &mut events).unwrap();
+
+        let walker_id = *state
+            .last_created_token_ids
+            .first()
+            .expect("Conjure must publish the conjured object as the chain-created referent");
+        assert_ne!(
+            walker_id, source_id,
+            "the conjured Walker must be a distinct object from Hangarback Assembler"
+        );
+
+        // `targets` is deliberately EMPTY (mirrors the perpetual-grant sibling
+        // test): a real "put a +1/+1 counter on it" clause reaches this
+        // resolver with no chosen object target, so `TargetFilter::LastCreated`
+        // must be resolved live via `state.last_created_token_ids`, not
+        // short-circuited by a pre-populated `ability.targets`.
+        let put_counter_ability = ResolvedAbility::new(
+            Effect::PutCounter {
+                counter_type: CounterType::Plus1Plus1,
+                count: QuantityExpr::Fixed { value: 1 },
+                target: TargetFilter::LastCreated,
+            },
+            vec![],
+            source_id,
+            PlayerId(0),
+        );
+        resolve_add(&mut state, &put_counter_ability, &mut events).unwrap();
+
+        let walker = state.objects.get(&walker_id).unwrap();
+        assert_eq!(
+            walker.counters.get(&CounterType::Plus1Plus1).copied(),
+            Some(1),
+            "the conjured Hangarback Walker must receive the +1/+1 counter"
+        );
+        let source = state.objects.get(&source_id).unwrap();
+        assert_eq!(
+            source.counters.get(&CounterType::Plus1Plus1).copied(),
+            None,
+            "Hangarback Assembler itself must receive no counter"
+        );
+    }
+
+    /// CR 122.5 + CR 608.2d: only a fixed stack-target move with no positive
+    /// commit is impossible. Interactive and non-move shapes stay fail-open.
+    #[test]
+    fn optional_stack_target_move_infeasibility_requires_no_committable_pair() {
+        let mut state = GameState::new_two_player(42);
+        let ability_source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Ability Source".to_string(),
+            Zone::Battlefield,
+        );
+        let source = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Counter Source".to_string(),
+            Zone::Battlefield,
+        );
+        let destination = create_object(
+            &mut state,
+            CardId(3),
+            PlayerId(0),
+            "Counter Destination".to_string(),
+            Zone::Battlefield,
+        );
+        let move_ability = |targets, count, mode, selection| {
+            ResolvedAbility::new(
+                Effect::MoveCounters {
+                    source: TargetFilter::Any,
+                    counter_type: Some(CounterType::Plus1Plus1),
+                    count,
+                    mode,
+                    selection,
+                    target: TargetFilter::Any,
+                },
+                targets,
+                ability_source,
+                PlayerId(0),
+            )
+        };
+
+        let targets = vec![TargetRef::Object(source), TargetRef::Object(destination)];
+        assert!(move_counters_optional_is_infeasible(
+            &state,
+            &move_ability(
+                targets.clone(),
+                Some(QuantityExpr::Fixed { value: 1 }),
+                CounterTransferMode::Move,
+                CounterMoveSelection::StackTarget,
+            ),
+        ));
+
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+        assert!(!move_counters_optional_is_infeasible(
+            &state,
+            &move_ability(
+                targets.clone(),
+                Some(QuantityExpr::Fixed { value: 1 }),
+                CounterTransferMode::Move,
+                CounterMoveSelection::StackTarget,
+            ),
+        ));
+        assert!(move_counters_optional_is_infeasible(
+            &state,
+            &move_ability(
+                vec![TargetRef::Object(source), TargetRef::Object(source)],
+                Some(QuantityExpr::Fixed { value: 1 }),
+                CounterTransferMode::Move,
+                CounterMoveSelection::StackTarget,
+            ),
+        ));
+        assert!(move_counters_optional_is_infeasible(
+            &state,
+            &move_ability(
+                targets.clone(),
+                Some(QuantityExpr::Fixed { value: 0 }),
+                CounterTransferMode::Move,
+                CounterMoveSelection::StackTarget,
+            ),
+        ));
+        assert!(move_counters_optional_is_infeasible(
+            &state,
+            &move_ability(
+                vec![TargetRef::Object(source), TargetRef::Object(ObjectId(999))],
+                Some(QuantityExpr::Fixed { value: 1 }),
+                CounterTransferMode::Move,
+                CounterMoveSelection::StackTarget,
+            ),
+        ));
+        assert!(!move_counters_optional_is_infeasible(
+            &state,
+            &move_ability(
+                targets.clone(),
+                Some(QuantityExpr::Fixed { value: 1 }),
+                CounterTransferMode::Put,
+                CounterMoveSelection::StackTarget,
+            ),
+        ));
+        assert!(!move_counters_optional_is_infeasible(
+            &state,
+            &move_ability(
+                targets,
+                Some(QuantityExpr::Fixed { value: 1 }),
+                CounterTransferMode::Move,
+                CounterMoveSelection::ResolutionDistributionAnyNumber,
+            ),
+        ));
     }
 
     /// Kinetic Ooze's full verbatim Oracle text, used only as the branch-identity

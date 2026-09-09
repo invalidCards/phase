@@ -13,13 +13,13 @@ use crate::types::ability::{
     CastFromZoneDriver, ChosenAttribute, CommanderOwnership, ControllerRef, CopyRetargetPermission,
     CostPaidObjectSnapshot, CounterKindDomain, DetachedRemainder, EachDamageRecipient, Effect,
     EffectError, EffectKind, EffectOutcomeSignal, EffectResolutionResult, EffectScope, FilterProp,
-    ForEachCategoryAction, ForwardedResultContext, ManaProduction, ObjectSelectionCardinality,
-    OpponentMayScope, PlayerFilter, PlayerScope, QuantityExpr, QuantityRef,
-    ReciprocalZoneChoiceRole, RepeatContinuation, ResolvedAbility, RevealUntilDisposition,
-    SacrificeCost, SacrificeRequirement, SharedQuality, SharedQualityRelation, SiblingCondition,
-    StaticDefinition, SubAbilityLink, TapStateChange, TargetChoiceTiming,
-    TargetDamageSourceBinding, TargetFilter, TargetRef, ThisWayCause, ZoneChoiceCandidateSource,
-    ZoneChoiceChooser,
+    ForEachCategoryAction, ForwardedResultContext, ManaProduction, MassLibraryShuffleMode,
+    ObjectSelectionCardinality, OpponentMayScope, PlayerFilter, PlayerRelation, PlayerScope,
+    PossessionAxis, QuantityExpr, QuantityRef, ReciprocalZoneChoiceRole, RepeatContinuation,
+    ResolvedAbility, RevealUntilDisposition, SacrificeCost, SacrificeRequirement, SharedQuality,
+    SharedQualityRelation, SiblingCondition, StaticDefinition, SubAbilityLink, TapStateChange,
+    TargetChoiceTiming, TargetDamageSourceBinding, TargetFilter, TargetRef, ThisWayCause,
+    ZoneChoiceCandidateSource, ZoneChoiceChooser,
 };
 #[cfg(test)]
 use crate::types::ability::{AttackScope, AttackSubject};
@@ -4555,13 +4555,51 @@ fn is_player_scope_local_continuation(
         return true;
     }
 
-    // CR 608.2c + CR 701.24a: "<each subject> shuffles the cards from their hand
-    // into their library" is ONE per-player move/shuffle instruction. Keep the
-    // terminal shuffle with its immediately preceding ChangeZoneAll; a following
-    // Draw remains the detached post-loop instruction.
-    let is_scoped_whole_hand_shuffle = matches!(
+    // CR 608.2c + CR 701.24c: The Great Aurora class has no single origin:
+    // its exact typed population combines the scoped player's hand with every
+    // permanent that player owns. Keep that population's terminal shuffle in
+    // the same player iteration so its following EventContextAmount draw reads
+    // the per-player move count.
+    if matches!(
         (parent, child),
         (
+            Effect::ChangeZoneAll {
+                origin: None,
+                destination: Zone::Library,
+                target,
+                library_shuffle: MassLibraryShuffleMode::TerminalShuffle,
+                ..
+            },
+            Effect::Shuffle {
+                target: TargetFilter::ScopedPlayer,
+            }
+        ) if target.is_all_player_owner_shuffle_population()
+    ) {
+        return scope_keeps_scoped_whole_hand_shuffle_local(scope);
+    }
+
+    // CR 608.2c + CR 701.24a: "<each subject> shuffles the cards from their hand
+    // and graveyard into their library, then draws" is one per-player
+    // instruction. Keep every parser-marked origin move, the terminal shuffle,
+    // and its fixed or EventContextAmount draw in the current iteration.
+    let is_scoped_library_shuffle_chain = matches!(
+        (parent, child),
+        (
+            Effect::ChangeZoneAll {
+                origin: Some(_),
+                destination: Zone::Library,
+                target: TargetFilter::ScopedPlayer,
+                library_shuffle: MassLibraryShuffleMode::TerminalShuffle,
+                ..
+            },
+            Effect::ChangeZoneAll {
+                origin: Some(_),
+                destination: Zone::Library,
+                target: TargetFilter::ScopedPlayer,
+                library_shuffle: MassLibraryShuffleMode::TerminalShuffle,
+                ..
+            }
+        ) | (
             Effect::ChangeZoneAll {
                 origin: Some(Zone::Hand),
                 destination: Zone::Library,
@@ -4571,9 +4609,38 @@ fn is_player_scope_local_continuation(
             Effect::Shuffle {
                 target: TargetFilter::ScopedPlayer,
             }
+        ) | (
+            Effect::ChangeZoneAll {
+                origin: Some(_),
+                destination: Zone::Library,
+                target: TargetFilter::ScopedPlayer,
+                library_shuffle: MassLibraryShuffleMode::TerminalShuffle,
+                ..
+            },
+            Effect::Shuffle {
+                target: TargetFilter::ScopedPlayer,
+            }
+        ) | (
+            Effect::Shuffle {
+                target: TargetFilter::ScopedPlayer,
+            },
+            Effect::Draw {
+                target: TargetFilter::ScopedPlayer,
+                count: QuantityExpr::Ref {
+                    qty: QuantityRef::EventContextAmount,
+                },
+            }
+        ) | (
+            Effect::Shuffle {
+                target: TargetFilter::ScopedPlayer,
+            },
+            Effect::Draw {
+                target: TargetFilter::ScopedPlayer,
+                count: QuantityExpr::Fixed { .. },
+            }
         )
     );
-    is_scoped_whole_hand_shuffle && scope_keeps_scoped_whole_hand_shuffle_local(scope)
+    is_scoped_library_shuffle_chain && scope_keeps_scoped_whole_hand_shuffle_local(scope)
 }
 
 /// CR 115.10 + CR 608.2c + CR 701.24a: Does this `player_scope` filter keep the
@@ -4852,18 +4919,20 @@ fn detach_after_player_scope_local_chain(
         next.player_scope,
         Some(PlayerFilter::PerformedActionThisWay { .. })
     );
+    let next_is_local_continuation = next.sub_link == SubAbilityLink::ContinuationStep
+        && is_player_scope_local_continuation(&node.effect, &next.effect, scope)
+        && !next_is_scoped_search_shuffle_tail;
     if next_is_performed_gated
         || next_is_zone_change_this_way_gated
         || next_is_co_scoped_anaphoric_consumer
         || next_is_optional_clause_continuation
-        || (is_player_scope_local_continuation(&node.effect, &next.effect, scope)
-            && !next_is_scoped_search_shuffle_tail)
+        || next_is_local_continuation
     {
         // CR 608.2c: co-scoped continuations kept inside the scoped template
         // inherit the outer iteration — redundant `player_scope` on the child
         // would re-enter the fan-out driver mid-instruction (Grave Sifter:
         // Choose → graveyard ChangeZone must run once per outer iteration).
-        if is_player_scope_local_continuation(&node.effect, &next.effect, scope) {
+        if next_is_local_continuation {
             next.player_scope = None;
         }
         let tail = detach_after_player_scope_local_chain(&mut next, scope, referent_in_scope);
@@ -6036,7 +6105,11 @@ fn ability_or_branch_references_tracked_set(ability: &ResolvedAbility) -> bool {
         || ability
             .repeat_for
             .as_ref()
-            .is_some_and(quantity_expr_references_tracked_set);
+            .is_some_and(quantity_expr_references_tracked_set)
+        || ability
+            .player_scope
+            .as_ref()
+            .is_some_and(player_filter_references_tracked_set);
 
     // CR 700.2 + CR 608.2c: both descents stop at a mode boundary. Guarding only
     // the entry hop in `next_sub_needs_tracked_set` is INSUFFICIENT whenever a
@@ -7170,6 +7243,255 @@ pub(crate) fn publish_tracked_set_with_causes(
     }
 }
 
+/// CR 701.24c-e + CR 608.2c: how a producer publishes the tracked population
+/// consumed by its continuation. An ordinary anaphor is derived from completed
+/// events. An owner-library shuffle must bind the prospective subjects before
+/// replacement effects can redirect them, and must retain explicitly designated
+/// players even when their set contains no cards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TrackedSetPublicationMode {
+    Normal,
+    Prospective { cause: ThisWayCause },
+}
+
+pub(crate) enum TrackedSetPublicationInput<'a> {
+    FinalizedSubjects {
+        objects: &'a [ObjectId],
+        participants: &'a [PlayerId],
+    },
+    ResolvedEvents {
+        ability: &'a ResolvedAbility,
+        events: &'a [GameEvent],
+    },
+}
+
+fn is_owner_library_shuffle_consumer(ability: &ResolvedAbility) -> bool {
+    matches!(
+        (&ability.effect, ability.player_scope.as_ref()),
+        (
+            Effect::Shuffle {
+                target: TargetFilter::ScopedPlayer,
+            },
+            Some(PlayerFilter::TrackedSetPossessor {
+                relation: PlayerRelation::All,
+                possession: PossessionAxis::Owner,
+                filter: TargetFilter::Any,
+                caused_by: Some(ThisWayCause::OwnerLibraryShuffleSubject),
+            })
+        )
+    )
+}
+
+fn first_tracked_set_consumer_mode(
+    ability: Option<&ResolvedAbility>,
+) -> Option<TrackedSetPublicationMode> {
+    let ability = ability?;
+    if crosses_modal_boundary(ability) {
+        return None;
+    }
+    if is_owner_library_shuffle_consumer(ability) {
+        return Some(TrackedSetPublicationMode::Prospective {
+            cause: ThisWayCause::OwnerLibraryShuffleSubject,
+        });
+    }
+    let consumes_here = matches!(
+        &ability.effect,
+        Effect::CreateDelayedTrigger {
+            uses_tracked_set: true,
+            ..
+        } | Effect::ChooseFromZone { .. }
+    ) || effect_references_tracked_set(&ability.effect)
+        || ability
+            .repeat_for
+            .as_ref()
+            .is_some_and(quantity_expr_references_tracked_set)
+        || ability
+            .player_scope
+            .as_ref()
+            .is_some_and(player_filter_references_tracked_set);
+    if consumes_here {
+        return Some(TrackedSetPublicationMode::Normal);
+    }
+    first_tracked_set_consumer_mode(ability.sub_ability.as_deref())
+        .or_else(|| first_tracked_set_consumer_mode(ability.else_ability.as_deref()))
+}
+
+pub(crate) fn tracked_set_publication_mode(
+    producer: &ResolvedAbility,
+) -> TrackedSetPublicationMode {
+    if is_owner_library_shuffle_consumer(producer) {
+        TrackedSetPublicationMode::Prospective {
+            cause: ThisWayCause::OwnerLibraryShuffleSubject,
+        }
+    } else {
+        first_tracked_set_consumer_mode(producer.sub_ability.as_deref())
+            .unwrap_or(TrackedSetPublicationMode::Normal)
+    }
+}
+
+fn controller_ref_participant(
+    ability: &ResolvedAbility,
+    controller: &ControllerRef,
+) -> Option<PlayerId> {
+    match controller {
+        ControllerRef::You => Some(ability.controller),
+        ControllerRef::ScopedPlayer => ability.scoped_player,
+        _ => None,
+    }
+}
+
+fn collect_filter_participants(
+    ability: &ResolvedAbility,
+    filter: &TargetFilter,
+    participants: &mut Vec<PlayerId>,
+) {
+    match filter {
+        TargetFilter::Typed(typed) => {
+            let private_zone = typed.properties.iter().any(|property| {
+                matches!(
+                    property,
+                    FilterProp::InZone {
+                        zone: Zone::Hand | Zone::Library | Zone::Graveyard
+                    }
+                ) || matches!(property, FilterProp::InAnyZone { zones } if zones.iter().all(|zone| *zone != Zone::Battlefield))
+            });
+            if private_zone {
+                if let Some(player) = typed
+                    .controller
+                    .as_ref()
+                    .and_then(|controller| controller_ref_participant(ability, controller))
+                {
+                    participants.push(player);
+                }
+            }
+            for property in &typed.properties {
+                if let FilterProp::Owned { controller } = property {
+                    if let Some(player) = controller_ref_participant(ability, controller) {
+                        participants.push(player);
+                    }
+                }
+            }
+        }
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => {
+            for filter in filters {
+                collect_filter_participants(ability, filter, participants);
+            }
+        }
+        TargetFilter::Not { filter } | TargetFilter::TrackedSetFiltered { filter, .. } => {
+            collect_filter_participants(ability, filter, participants)
+        }
+        _ => {}
+    }
+}
+
+/// Derive the players named by a prospective producer from its typed scope and
+/// from the owners of the finalized object subjects.
+pub(crate) fn prospective_subject_participants(
+    state: &GameState,
+    ability: &ResolvedAbility,
+    objects: &[ObjectId],
+) -> Vec<PlayerId> {
+    let mut participants: Vec<PlayerId> = objects
+        .iter()
+        .filter_map(|id| state.objects.get(id).map(|object| object.owner))
+        .collect();
+    participants.extend(ability.targets.iter().filter_map(|target| match target {
+        TargetRef::Player(player) => Some(*player),
+        _ => None,
+    }));
+    if ability.player_scope.is_some() {
+        participants.extend(ability.scoped_player);
+    }
+    if let Some(filter) = ability.effect.target_filter() {
+        collect_filter_participants(ability, filter, &mut participants);
+    }
+    participants.sort_unstable_by_key(|player| player.0);
+    participants.dedup();
+    participants
+}
+
+fn publish_prospective_tracked_set(
+    state: &mut GameState,
+    objects: &[ObjectId],
+    participants: &[PlayerId],
+    cause: ThisWayCause,
+) {
+    let extends_same_population = state.chain_tracked_set_id.is_some_and(|set_id| {
+        state
+            .tracked_set_member_causes
+            .get(&set_id)
+            .is_some_and(|causes| causes.values().any(|member_cause| *member_cause == cause))
+            || state
+                .tracked_set_participants
+                .get(&set_id)
+                .is_some_and(|players| {
+                    players
+                        .iter()
+                        .any(|(_, participant_cause)| *participant_cause == cause)
+                })
+    });
+    if !extends_same_population {
+        state.chain_tracked_set_id = None;
+    }
+    publish_tracked_set_with_causes(
+        state,
+        objects
+            .iter()
+            .copied()
+            .map(|id| (id, Some(cause)))
+            .collect(),
+    );
+    let set_id = state
+        .chain_tracked_set_id
+        .expect("prospective publication establishes a tracked set");
+    let members = state.tracked_object_sets.entry(set_id).or_default();
+    members.sort_unstable_by_key(|id| id.0);
+    members.dedup();
+    let ledger = state.tracked_set_participants.entry(set_id).or_default();
+    for player in participants.iter().copied() {
+        if !ledger.contains(&(player, cause)) {
+            ledger.push((player, cause));
+        }
+    }
+    ledger.sort_unstable_by_key(|(player, _)| player.0);
+}
+
+/// Single authority for tracked-set publication at event and prospective
+/// subject seams. Prospective consumers deliberately ignore event-derived
+/// publication so replacement redirects cannot change which owners shuffle.
+pub(crate) fn publish_tracked_set_for_resolution(
+    state: &mut GameState,
+    producer: &ResolvedAbility,
+    input: TrackedSetPublicationInput<'_>,
+) {
+    match (tracked_set_publication_mode(producer), input) {
+        (
+            TrackedSetPublicationMode::Prospective { cause },
+            TrackedSetPublicationInput::FinalizedSubjects {
+                objects,
+                participants,
+            },
+        ) => publish_prospective_tracked_set(state, objects, participants, cause),
+        (
+            TrackedSetPublicationMode::Normal,
+            TrackedSetPublicationInput::ResolvedEvents { ability, events },
+        ) if next_sub_needs_tracked_set(producer) => {
+            let affected = affected_objects_with_causes(state, ability, &ability.effect, events);
+            publish_tracked_set_with_causes(state, affected);
+        }
+        (
+            TrackedSetPublicationMode::Normal,
+            TrackedSetPublicationInput::FinalizedSubjects { .. },
+        )
+        | (
+            TrackedSetPublicationMode::Prospective { .. },
+            TrackedSetPublicationInput::ResolvedEvents { .. },
+        )
+        | (TrackedSetPublicationMode::Normal, TrackedSetPublicationInput::ResolvedEvents { .. }) => {
+        }
+    }
+}
+
 /// CR 603.7: A player-chosen "those creatures" set is a fresh resolution
 /// scope — never extend an ancestor chain set.
 ///
@@ -7790,8 +8112,9 @@ fn ability_refs_triggering_source(ability: &ResolvedAbility) -> bool {
 /// True when any effect in the ability chain references `ParentTarget`
 /// (including nested sub/else abilities). Used by delayed-trigger snapshotting
 /// so an Attach host on a ChangeZone sub-chain (Gift of Immortality #4956) still
-/// freezes the parent referent at creation time.
-fn ability_refs_parent_target(ability: &ResolvedAbility) -> bool {
+/// freezes the parent referent at creation time, and by a search-selection
+/// continuation to preserve its pre-search player referent for a later tail.
+pub(crate) fn ability_refs_parent_target(ability: &ResolvedAbility) -> bool {
     effect_refs_parent_target(&ability.effect)
         || ability
             .sub_ability
@@ -7891,6 +8214,17 @@ pub(crate) fn has_member_driven_repeat_after_hydration(
     has_member_driven_repeat(&ability_with_event_context_targets(state, ability))
 }
 
+/// CR 608.2c + CR 608.2d + CR 603.12a: these repeat shapes apply an
+/// optional instruction independently to every iteration, rather than once to
+/// the whole ability. Keep this as the single structural exclusion for both
+/// the up-front prompt and the early infeasibility auto-decline: the latter
+/// must not decide the root from only its first bound member.
+fn optionality_is_per_iteration(state: &GameState, ability: &ResolvedAbility) -> bool {
+    has_kind_driven_repeat(ability)
+        || has_member_driven_repeat_after_hydration(state, ability)
+        || is_repeated_optional_payment(ability)
+}
+
 /// CR 608.2d: "A player can't choose an impossible option." An optional effect
 /// whose only reachable outcome is a no-op must not be offered as a "you may"
 /// prompt at all. Each arm below proves infeasibility through its authoritative
@@ -7918,6 +8252,12 @@ fn optional_effect_is_infeasible(state: &GameState, ability: &ResolvedAbility) -
         // `OptionalEffectPerformed` rider) must be suppressed (Sun Droplet #4776).
         Effect::RemoveCounter { .. } => {
             counters::remove_counter_optional_is_infeasible(state, ability)
+        }
+        // CR 122.5 + CR 608.2d: hydrate event-context targets before asking the
+        // move resolver's feasibility authority, exactly as resolution does.
+        Effect::MoveCounters { .. } => {
+            let effective = hydrate_event_context_targets(state, ability);
+            counters::move_counters_optional_is_infeasible(state, effective.as_ref())
         }
         // CR 608.2d + CR 122.1: an optional exact counter-removal selection
         // cannot be accepted unless every required permanent is selectable.
@@ -8145,10 +8485,7 @@ pub(crate) fn upfront_optional_gate(
     }
     // CR 608.2c + CR 608.2d + CR 603.12a: the three shapes that SUPPRESS the single up-front
     // gate and fire optionality per iteration instead.
-    if has_kind_driven_repeat(ability)
-        || has_member_driven_repeat_after_hydration(state, ability)
-        || is_repeated_optional_payment(ability)
-    {
+    if optionality_is_per_iteration(state, ability) {
         return None;
     }
     let infeasible = match feasibility {
@@ -9793,7 +10130,14 @@ fn publish_player_scope_clause_results(
     ids.dedup();
     state.last_zone_changed_ids = ids;
     if next_sub_needs_tracked_set(outer) {
-        publish_tracked_set_with_causes(state, affected_with_causes);
+        publish_tracked_set_for_resolution(
+            state,
+            outer,
+            TrackedSetPublicationInput::ResolvedEvents {
+                ability: scoped_template,
+                events: scoped_events,
+            },
+        );
     }
     linked_exile_batch_from_events(state, outer.source_id, scoped_events)
 }
@@ -12335,7 +12679,12 @@ fn resolve_chain_body(
         }
     }
 
-    let optional_is_infeasible = ability.optional && optional_effect_is_infeasible(state, ability);
+    // Per-iteration optionality must reach the rebound singleton ability before
+    // feasibility is decided. In particular, the root's first member can have
+    // no committable counter move while a later member remains offerable.
+    let optional_is_infeasible = ability.optional
+        && !optionality_is_per_iteration(state, ability)
+        && optional_effect_is_infeasible(state, ability);
 
     // CR 608.2c + CR 608.2d: An infeasible optional cast/play instruction or
     // exact object selection does not happen. Route either outcome through the existing
@@ -12352,6 +12701,7 @@ fn resolve_chain_body(
     let auto_decline_infeasible_optional = matches!(
         &ability.effect,
         Effect::CastFromZone { .. }
+            | Effect::MoveCounters { .. }
             | Effect::ChooseObjectsIntoTrackedSet {
                 cardinality: Some(ObjectSelectionCardinality::Exactly { .. }),
                 ..
@@ -13313,17 +13663,36 @@ fn resolve_chain_body(
         ability.source_id,
         parent_events,
     );
-    // No `fill_zero_contributors` here, unlike the `player_scope` loop: the
-    // reduction domain of a fan-out is the set of players the clause applied to,
-    // and this path has no such set to fill from — a bare effect applies to whom
-    // its own target names, and a player who emitted no event was never in the
-    // domain rather than being a zero contributor within it.
-    let preserve_counts_for_current_consumer =
-        ability.player_scope.is_none() && effect_consumes_event_context_amount(&ability.effect);
+    // CR 608.2c + CR 109.5: `split_player_scope_chain` clears `player_scope`
+    // from the per-player template but retains `scoped_player`. A completed
+    // count producer in that template therefore has one known reduction-domain
+    // member even when it emitted no event; publish that player's explicit zero.
+    // A genuinely bare effect has no scoped player and keeps the event-derived
+    // domain unchanged.
+    let counts_by_player = counts_by_player.map(|counts| match ability.scoped_player {
+        Some(player) => fill_zero_contributors(counts, &[player]),
+        None => counts,
+    });
+    // Preserve the completed table only across the terminal Shuffle bridge of
+    // a local wheel and through its terminal consumer. A consumer with another
+    // child must clear before handing off, so a scoped zero cannot leak through
+    // an unrelated later instruction.
+    let preserve_counts_for_next_consumer = ability.player_scope.is_none()
+        && ((matches!(
+            ability.effect,
+            Effect::Shuffle {
+                target: TargetFilter::ScopedPlayer,
+            }
+        ) && ability
+            .sub_ability
+            .as_deref()
+            .is_some_and(|sub| effect_consumes_event_context_amount(&sub.effect)))
+            || (ability.sub_ability.is_none()
+                && effect_consumes_event_context_amount(&ability.effect)));
     if !install_previous_effect_counts_by_player(
         state,
         counts_by_player,
-        preserve_counts_for_current_consumer,
+        preserve_counts_for_next_consumer,
     ) {
         if let Some(amount) = previous_effect_amount_from_events(state, ability, parent_events) {
             state.last_effect_amount = Some(amount);
@@ -13492,9 +13861,14 @@ fn resolve_chain_body(
     //     creatures" after a mass counter instruction means the permanents that
     //     actually received counters.
     if next_sub_needs_tracked_set(ability) {
-        let affected_with_causes =
-            affected_objects_with_causes(state, ability, &ability.effect, &events[events_before..]);
-        publish_tracked_set_with_causes(state, affected_with_causes);
+        publish_tracked_set_for_resolution(
+            state,
+            ability,
+            TrackedSetPublicationInput::ResolvedEvents {
+                ability,
+                events: &events[events_before..],
+            },
+        );
     }
 
     // CR 608.2c + CR 608.2d: after a resolved producer has no legal candidate,
@@ -16749,8 +17123,9 @@ mod tests {
         CardPredicateChoice, CastingPermission, ChoiceType, ChoiceValue, Chooser, ChosenAttribute,
         ChosenCounterCountCondition, Comparator, ContinuousModification, ControllerRef,
         DamageChannel, DelayedTriggerCondition, Duration, EffectKind, EffectScope, FilterProp,
-        ManaSpendPermission, ObjectProperty, PermissionGrantee, PlayerFilter, PlayerScope, PtValue,
-        QuantityExpr, QuantityRef, SpellContext, StaticDefinition, SubAbilityLink, TapStateChange,
+        ManaSpendPermission, ObjectProperty, ObjectScope, PermissionGrantee, PlayerFilter,
+        PlayerScope, PtValue, QuantityExpr, QuantityModification, QuantityRef,
+        ReplacementDefinition, SpellContext, StaticDefinition, SubAbilityLink, TapStateChange,
         TargetFilter, TargetRef, TargetSelectionMode, TriggerDefinition, TypeFilter, TypedFilter,
         UnlessPayModifier, UntilCondition, ZoneOwner,
     };
@@ -16773,6 +17148,7 @@ mod tests {
     use crate::types::mana::{ManaColor, ManaCost, ManaType, ManaUnit};
     use crate::types::phase::Phase;
     use crate::types::player::{PlayerCounterKind, PlayerId};
+    use crate::types::replacements::ReplacementEvent;
     use crate::types::resolution::{
         OptionalEffectFrame, ResolutionStateWire, RESOLUTION_STATE_WIRE_VERSION,
     };
@@ -18054,6 +18430,382 @@ mod tests {
         );
         ability.optional = true;
         ability
+    }
+
+    fn optional_stack_target_counter_move(
+        source_id: ObjectId,
+        targets: Vec<TargetRef>,
+    ) -> ResolvedAbility {
+        let mut ability = ResolvedAbility::new(
+            Effect::MoveCounters {
+                source: TargetFilter::Any,
+                counter_type: Some(CounterType::Plus1Plus1),
+                count: Some(QuantityExpr::Fixed { value: 1 }),
+                mode: crate::types::ability::CounterTransferMode::Move,
+                selection: crate::types::ability::CounterMoveSelection::StackTarget,
+                target: TargetFilter::Any,
+            },
+            targets,
+            source_id,
+            PlayerId(0),
+        );
+        ability.optional = true;
+        ability
+    }
+
+    /// CR 603.5 + CR 608.2d + CR 122.5: Tidus's two target slots may legally
+    /// name the same creature, but that makes the optional counter move
+    /// impossible. The resolver must therefore auto-decline it without a
+    /// prompt while retaining the normal prompt for a distinct, counter-bearing
+    /// sibling and routing the impossible branch through its printed else tail.
+    #[test]
+    fn optional_tidus_move_suppresses_only_impossible_prompt_and_runs_else() {
+        let mut state = GameState::new_two_player(42);
+        let tidus = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Tidus, Yuna's Guardian".to_string(),
+            Zone::Battlefield,
+        );
+        let sibling = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Tidus's Ally".to_string(),
+            Zone::Battlefield,
+        );
+        let start_life = state.players[0].life;
+
+        let mut impossible = optional_stack_target_counter_move(
+            tidus,
+            vec![TargetRef::Object(tidus), TargetRef::Object(tidus)],
+        );
+        let mut else_ability =
+            optional_gain_life(tidus, PlayerId(0), 1).condition(AbilityCondition::Not {
+                condition: Box::new(AbilityCondition::EffectOutcome {
+                    signal: EffectOutcomeSignal::OptionalEffectPerformed,
+                }),
+            });
+        else_ability.optional = false;
+        impossible.else_ability = Some(Box::new(else_ability));
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &impossible, &mut events, 0)
+            .expect("an impossible optional move auto-declines");
+        assert!(
+            !matches!(state.waiting_for, WaitingFor::OptionalEffectChoice { .. }),
+            "same-object Tidus move must not offer an accept prompt"
+        );
+        assert_eq!(
+            state.players[0].life,
+            start_life + 1,
+            "the auto-decline must preserve the explicit else continuation"
+        );
+
+        state
+            .objects
+            .get_mut(&tidus)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+        let feasible = optional_stack_target_counter_move(
+            tidus,
+            vec![TargetRef::Object(tidus), TargetRef::Object(sibling)],
+        );
+        resolve_ability_chain(&mut state, &feasible, &mut events, 0)
+            .expect("a feasible Tidus move resolves to the may gate");
+        assert!(
+            matches!(state.waiting_for, WaitingFor::OptionalEffectChoice { .. }),
+            "a distinct destination with a counter source must remain offerable"
+        );
+    }
+
+    /// CR 608.2b + CR 608.2d: target legality remains owned by the existing
+    /// validation seam. Once a target changes controller or incarnation, the
+    /// feasibility probe sees only the validated slots and suppresses a move
+    /// that can no longer commit.
+    #[test]
+    fn optional_move_counter_feasibility_uses_validated_target_slots() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Counter Source".to_string(),
+            Zone::Battlefield,
+        );
+        let destination = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Counter Destination".to_string(),
+            Zone::Battlefield,
+        );
+        for id in [source, destination] {
+            state
+                .objects
+                .get_mut(&id)
+                .unwrap()
+                .card_types
+                .core_types
+                .push(CoreType::Creature);
+        }
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+        let controlled_creature = TargetFilter::Typed(TypedFilter {
+            type_filters: vec![TypeFilter::Creature],
+            controller: Some(ControllerRef::You),
+            properties: vec![],
+        });
+        let mut ability = optional_stack_target_counter_move(
+            source,
+            vec![TargetRef::Object(source), TargetRef::Object(destination)],
+        );
+        let Effect::MoveCounters { target, .. } = &mut ability.effect else {
+            unreachable!("test constructs MoveCounters");
+        };
+        *target = controlled_creature;
+        ability.selected_target_incarnations = vec![
+            ObjectIncarnationRef::from_object(&state.objects[&source]),
+            ObjectIncarnationRef::from_object(&state.objects[&destination]),
+        ];
+
+        assert!(!optional_effect_is_infeasible(&state, &ability));
+        state.objects.get_mut(&destination).unwrap().controller = PlayerId(1);
+        let controller_changed =
+            crate::game::ability_utils::validate_targets_in_chain(&state, &ability);
+        assert_eq!(controller_changed.targets, vec![TargetRef::Object(source)]);
+        assert!(optional_effect_is_infeasible(&state, &controller_changed));
+
+        state.objects.get_mut(&destination).unwrap().controller = PlayerId(0);
+        state.objects.get_mut(&destination).unwrap().incarnation += 1;
+        let stale_incarnation =
+            crate::game::ability_utils::validate_targets_in_chain(&state, &ability);
+        assert_eq!(stale_incarnation.targets, vec![TargetRef::Object(source)]);
+        assert!(optional_effect_is_infeasible(&state, &stale_incarnation));
+    }
+
+    /// CR 603.2 + CR 608.2d: feasibility must hydrate the same event-context
+    /// target carrier as production resolution before resolving a quantity that
+    /// reads that target. Without the explicit hydration in
+    /// `optional_effect_is_infeasible`, the count reads zero from empty targets,
+    /// auto-declines, and runs the else branch instead of reaching this prompt.
+    #[test]
+    fn optional_move_counter_feasibility_hydrates_target_dependent_quantity() {
+        let mut state = GameState::new_two_player(42);
+        let source = create_object(
+            &mut state,
+            CardId(1),
+            PlayerId(0),
+            "Counter Source".to_string(),
+            Zone::Battlefield,
+        );
+        let destination = create_object(
+            &mut state,
+            CardId(2),
+            PlayerId(0),
+            "Triggered Destination".to_string(),
+            Zone::Battlefield,
+        );
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 2);
+        state
+            .objects
+            .get_mut(&destination)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+        state.current_trigger_event = Some(GameEvent::CounterAdded {
+            object_id: destination,
+            counter_type: CounterType::Plus1Plus1,
+            count: 1,
+            actor: PlayerId(0),
+        });
+        let mut ability = ResolvedAbility::new(
+            Effect::MoveCounters {
+                source: TargetFilter::SelfRef,
+                counter_type: Some(CounterType::Plus1Plus1),
+                count: Some(QuantityExpr::Ref {
+                    qty: QuantityRef::CountersOn {
+                        scope: ObjectScope::Target,
+                        counter_type: Some(CounterType::Plus1Plus1),
+                    },
+                }),
+                mode: crate::types::ability::CounterTransferMode::Move,
+                selection: crate::types::ability::CounterMoveSelection::StackTarget,
+                target: TargetFilter::TriggeringSource,
+            },
+            vec![],
+            source,
+            PlayerId(0),
+        );
+        ability.optional = true;
+        let start_life = state.players[0].life;
+        let mut else_ability = optional_gain_life(source, PlayerId(0), 1);
+        else_ability.optional = false;
+        else_ability.condition = Some(AbilityCondition::Not {
+            condition: Box::new(AbilityCondition::effect_performed()),
+        });
+        ability.else_ability = Some(Box::new(else_ability));
+
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0)
+            .expect("hydrated target-dependent counter move reaches its may gate");
+        assert!(
+            matches!(state.waiting_for, WaitingFor::OptionalEffectChoice { .. }),
+            "the hydrated event target makes the dynamic move offerable"
+        );
+        assert_eq!(
+            state.players[0].life, start_life,
+            "the else branch must not run while the hydrated move is offered"
+        );
+    }
+
+    /// CR 608.2c + CR 608.2d + CR 122.5: an optional member-driven move must
+    /// decide feasibility after each member is rebound. The first member is the
+    /// source itself (an impossible same-object move), but the second is a
+    /// distinct counter-bearing source/destination pair and remains offerable.
+    #[test]
+    fn optional_member_move_declines_only_impossible_member_and_reaches_later_prompt() {
+        let mut state = GameState::new_two_player(42);
+        let source = reflexive_test_creature(&mut state, PlayerId(0), "Counter Source");
+        let destination = reflexive_test_creature(&mut state, PlayerId(0), "Later Destination");
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+
+        let mut ability = ResolvedAbility::new(
+            Effect::MoveCounters {
+                source: TargetFilter::SelfRef,
+                counter_type: Some(CounterType::Plus1Plus1),
+                count: Some(QuantityExpr::Fixed { value: 1 }),
+                mode: crate::types::ability::CounterTransferMode::Move,
+                selection: crate::types::ability::CounterMoveSelection::StackTarget,
+                target: TargetFilter::ParentTarget,
+            },
+            vec![TargetRef::Object(source)],
+            source,
+            PlayerId(0),
+        );
+        ability.optional = true;
+        ability.repeat_for = Some(QuantityExpr::Ref {
+            qty: QuantityRef::ObjectCount {
+                filter: TargetFilter::Typed(TypedFilter::creature().controller(ControllerRef::You)),
+            },
+        });
+        let start_life = state.players[0].life;
+        let mut tail = optional_gain_life(source, PlayerId(0), 1);
+        tail.optional = false;
+        tail.sub_link = SubAbilityLink::SequentialSibling;
+        ability.sub_ability = Some(Box::new(tail));
+
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0)
+            .expect("member-driven move resolves its first member");
+        assert!(
+            matches!(state.waiting_for, WaitingFor::OptionalEffectChoice { .. }),
+            "the later distinct member must still receive its own may prompt"
+        );
+        assert_eq!(
+            state.players[0].life,
+            start_life + 1,
+            "the impossible first member must retain its sequential continuation"
+        );
+
+        crate::game::engine_payment_choices::handle_optional_effect_choice(
+            &mut state,
+            true,
+            &mut events,
+        )
+        .expect("accepting the later member resolves its move");
+        assert!(
+            !state.objects[&source]
+                .counters
+                .contains_key(&CounterType::Plus1Plus1),
+            "the later feasible member must move the source counter"
+        );
+        assert_eq!(
+            state.objects[&destination]
+                .counters
+                .get(&CounterType::Plus1Plus1)
+                .copied(),
+            Some(1),
+            "the later distinct destination must receive the moved counter"
+        );
+        assert_eq!(
+            state.players[0].life,
+            start_life + 2,
+            "the later accepted member must preserve its own sequential continuation"
+        );
+    }
+
+    /// CR 614.6 + CR 608.2d + CR 122.5: counter replacement legality is not
+    /// predicted by the structural optional probe. A destination that prevents
+    /// counters still receives the production-shaped may prompt; replacement
+    /// handling remains the counter resolver's responsibility after acceptance.
+    #[test]
+    fn optional_move_with_counter_prevention_remains_offerable() {
+        let mut state = GameState::new_two_player(42);
+        let source = reflexive_test_creature(&mut state, PlayerId(0), "Counter Source");
+        let destination = reflexive_test_creature(&mut state, PlayerId(0), "No Counters");
+        state
+            .objects
+            .get_mut(&source)
+            .unwrap()
+            .counters
+            .insert(CounterType::Plus1Plus1, 1);
+        let mut prevention = ReplacementDefinition::new(ReplacementEvent::AddCounter);
+        prevention.valid_card = Some(TargetFilter::SelfRef);
+        prevention.quantity_modification = Some(QuantityModification::Prevent);
+        state
+            .objects
+            .get_mut(&destination)
+            .unwrap()
+            .replacement_definitions
+            .push(prevention);
+
+        let ability = optional_stack_target_counter_move(
+            source,
+            vec![TargetRef::Object(source), TargetRef::Object(destination)],
+        );
+        let mut events = Vec::new();
+        resolve_ability_chain(&mut state, &ability, &mut events, 0)
+            .expect("replacement-sensitive counter move reaches its may gate");
+        assert!(
+            matches!(state.waiting_for, WaitingFor::OptionalEffectChoice { .. }),
+            "counter-placement prevention must fail open instead of suppressing the may"
+        );
+        crate::game::engine_payment_choices::handle_optional_effect_choice(
+            &mut state,
+            true,
+            &mut events,
+        )
+        .expect("accepting the replacement-sensitive move resolves through its pipeline");
+        assert_eq!(
+            state.objects[&source]
+                .counters
+                .get(&CounterType::Plus1Plus1)
+                .copied(),
+            Some(1),
+            "the blocked move must leave the source counter in place"
+        );
+        assert!(
+            !state.objects[&destination]
+                .counters
+                .contains_key(&CounterType::Plus1Plus1),
+            "the replacement must prevent the destination counter placement"
+        );
     }
 
     #[test]
@@ -23386,6 +24138,7 @@ mod tests {
                     enter_with_counters: vec![],
                     face_down_profile: None,
                     library_position: None,
+                    library_shuffle: Default::default(),
                     random_order: false,
                 },
                 vec![],
@@ -24508,6 +25261,7 @@ mod tests {
                     enter_with_counters: vec![],
                     face_down_profile: None,
                     library_position: None,
+                    library_shuffle: Default::default(),
                     random_order: false,
                 },
                 vec![],
@@ -24611,6 +25365,7 @@ mod tests {
                     enter_with_counters: vec![],
                     face_down_profile: None,
                     library_position: None,
+                    library_shuffle: Default::default(),
                     random_order: false,
                 },
                 vec![],
@@ -24688,6 +25443,7 @@ mod tests {
                 enter_with_counters: vec![],
                 face_down_profile: None,
                 library_position: None,
+                library_shuffle: Default::default(),
                 random_order: false,
             },
             vec![],
@@ -26718,6 +27474,7 @@ mod tests {
                 enter_with_counters: vec![],
                 face_down_profile: None,
                 library_position: None,
+                library_shuffle: Default::default(),
                 random_order: false,
             },
             vec![],
@@ -26785,6 +27542,7 @@ mod tests {
                 enter_with_counters: vec![],
                 face_down_profile: None,
                 library_position: None,
+                library_shuffle: Default::default(),
                 random_order: false,
             },
             vec![],
@@ -26866,6 +27624,7 @@ mod tests {
                 enter_with_counters: vec![],
                 face_down_profile: None,
                 library_position: None,
+                library_shuffle: Default::default(),
                 random_order: false,
             },
             vec![],
@@ -34796,6 +35555,7 @@ mod tests {
             enter_with_counters: vec![],
             face_down_profile: None,
             library_position: None,
+            library_shuffle: Default::default(),
             random_order: false,
         }
     }
@@ -34811,6 +35571,7 @@ mod tests {
             enter_with_counters: vec![],
             face_down_profile: None,
             library_position: None,
+            library_shuffle: Default::default(),
             random_order: false,
         }
     }
@@ -35197,109 +35958,6 @@ mod tests {
                 &PlayerFilter::All,
             ),
             "an intervening draw must remain a separate instruction"
-        );
-    }
-
-    /// CR 608.2c + CR 701.24a + CR 701.24c/d: Each player's whole-hand move
-    /// and terminal shuffle stay local to that player, while the draw tail is
-    /// detached until every player has completed the shuffle process.
-    #[test]
-    fn all_player_hand_shuffle_keeps_shuffle_local_and_draws_after_the_scope() {
-        let mut state = GameState::new(FormatConfig::standard(), 3, 42);
-        let source = ObjectId(900);
-        let players = [PlayerId(0), PlayerId(1), PlayerId(2)];
-        for (player, hand_count) in players.into_iter().zip([9, 3, 7]) {
-            for card in 0..hand_count {
-                create_object(
-                    &mut state,
-                    CardId(1_000 + u64::from(player.0) * 100 + card as u64),
-                    player,
-                    format!("P{} hand {card}", player.0),
-                    Zone::Hand,
-                );
-            }
-            for card in 0..10 {
-                create_object(
-                    &mut state,
-                    CardId(2_000 + u64::from(player.0) * 100 + card as u64),
-                    player,
-                    format!("P{} library {card}", player.0),
-                    Zone::Library,
-                );
-            }
-        }
-
-        let mut move_hand = ResolvedAbility::new(
-            hand_to_library_effect(TargetFilter::ScopedPlayer),
-            vec![],
-            source,
-            PlayerId(0),
-        );
-        move_hand.player_scope = Some(PlayerFilter::All);
-        let mut shuffle = ResolvedAbility::new(
-            Effect::Shuffle {
-                target: TargetFilter::ScopedPlayer,
-            },
-            vec![],
-            source,
-            PlayerId(0),
-        );
-        let mut draw = ResolvedAbility::new(
-            Effect::Draw {
-                count: QuantityExpr::Ref {
-                    qty: QuantityRef::EventContextAmount,
-                },
-                target: TargetFilter::ScopedPlayer,
-            },
-            vec![],
-            source,
-            PlayerId(0),
-        );
-        draw.player_scope = Some(PlayerFilter::All);
-        shuffle.sub_ability = Some(Box::new(draw));
-        move_hand.sub_ability = Some(Box::new(shuffle));
-
-        let mut events = Vec::new();
-        resolve_ability_chain(&mut state, &move_hand, &mut events, 0).unwrap();
-
-        for (player, expected_draws) in players.into_iter().zip([9, 3, 7]) {
-            assert_eq!(
-                state.players[player.0 as usize].cards_drawn_this_turn, expected_draws,
-                "P{} must draw exactly the number of cards they moved",
-                player.0
-            );
-            assert!(
-                events.iter().any(|event| matches!(
-                    event,
-                    GameEvent::PlayerPerformedAction {
-                        player_id,
-                        action: PlayerActionKind::ShuffledLibrary,
-                        ..
-                    } if *player_id == player
-                )),
-                "P{} must shuffle their own library",
-                player.0
-            );
-        }
-        let last_shuffle = events
-            .iter()
-            .rposition(|event| {
-                matches!(
-                    event,
-                    GameEvent::PlayerPerformedAction {
-                        action: PlayerActionKind::ShuffledLibrary,
-                        ..
-                    }
-                )
-            })
-            .expect("the local shuffle chain emitted shuffle actions");
-        let first_draw = events
-            .iter()
-            .position(|event| matches!(event, GameEvent::CardDrawn { .. }))
-            .expect("the detached draw tail emitted card-draw events");
-        assert!(
-            last_shuffle < first_draw,
-            "the draw tail must start only after every scoped move/shuffle pass"
         );
     }
 
