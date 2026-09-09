@@ -707,6 +707,7 @@ impl FoldableCopyException<'_> {
 #[derive(Clone, Copy, Default)]
 struct CopyExceptionOverrides {
     card_types: bool,
+    color: bool,
     power: bool,
     toughness: bool,
 }
@@ -717,6 +718,7 @@ impl CopyExceptionOverrides {
         for modification in modifications {
             match modification {
                 FoldableCopyException::SetCardTypes { .. } => overrides.card_types = true,
+                FoldableCopyException::AddColor { .. } => overrides.color = true,
                 FoldableCopyException::SetPower { .. } => overrides.power = true,
                 FoldableCopyException::SetToughness { .. } => overrides.toughness = true,
                 FoldableCopyException::SetName { .. }
@@ -725,7 +727,6 @@ impl CopyExceptionOverrides {
                 | FoldableCopyException::GrantTrigger { .. }
                 | FoldableCopyException::AddType { .. }
                 | FoldableCopyException::AddSubtype { .. }
-                | FoldableCopyException::AddColor { .. }
                 | FoldableCopyException::GrantStaticAbility { .. }
                 | FoldableCopyException::RetainPrintedTriggerFromSource { .. }
                 | FoldableCopyException::RetainPrintedAbilityFromSource { .. }
@@ -756,6 +757,7 @@ fn prune_overridden_cdas(
         }
         let axes = cda_defined_axes(definition)?;
         let overridden = (axes.card_types && overrides.card_types)
+            || (axes.color && overrides.color)
             || (axes.power && overrides.power)
             || (axes.toughness && overrides.toughness);
         if !overridden {
@@ -778,9 +780,10 @@ fn cda_defined_axes(definition: &StaticDefinition) -> Option<CopyExceptionOverri
             | ContinuousModification::SetPower { .. } => axes.power = true,
             ContinuousModification::SetDynamicToughness { .. }
             | ContinuousModification::SetToughness { .. } => axes.toughness = true,
-            // Color CDAs are known and never overridden by the admitted
-            // additive-color exception, so retain the definition.
-            ContinuousModification::SetColor { .. } => {}
+            // CR 707.9d: an exception that supplies a color does not copy the
+            // source CDA defining color, even when the exception adds that
+            // color in addition to the source's other colors.
+            ContinuousModification::SetColor { .. } => axes.color = true,
             _ => return None,
         }
     }

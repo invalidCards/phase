@@ -16,11 +16,13 @@ use engine::types::ability::{
 use engine::types::card_type::CoreType;
 use engine::types::counter::CounterType;
 use engine::types::identifiers::ObjectId;
-use engine::types::mana::{ManaCost, ManaType, ManaUnit};
+use engine::types::mana::{ManaColor, ManaCost, ManaType, ManaUnit};
 use engine::types::phase::Phase;
 
 const MACHINE_GODS_EFFIGY: &str = "You may have this artifact enter as a copy of any creature on the battlefield, except it's an artifact and it has \"{T}: Add {U}.\" (It's not a creature.)\n{T}: Add {U}.";
 const COPY_ARTIFACT: &str = "You may have this enchantment enter as a copy of any artifact on the battlefield, except it's an enchantment in addition to its other types.";
+const LAZOTEP_CONVERT: &str = "You may have this creature enter as a copy of any creature card in a graveyard, except it's a 4/4 black Zombie in addition to its other colors and types.";
+const DEVOID: &str = "Devoid (This card has no color.)";
 
 fn copy_exception_modifications(
     oracle: &str,
@@ -240,6 +242,56 @@ fn copy_artifact_snapshots_effigys_complete_type_replacement() {
             .count_color(ManaType::Blue),
         1
     );
+}
+
+/// CR 707.9d + CR 604.3: resolver-level regression using Lazotep Convert's
+/// exactly parsed copy exception. Its black exception replaces a copied Devoid
+/// creature's color-defining ability, even though it adds black in addition to
+/// the source's other colors and types.
+#[test]
+fn lazotep_convert_color_exception_does_not_copy_devoid_cda() {
+    let mut scenario = GameScenario::new();
+    let donor = {
+        let mut builder = scenario.add_creature(P0, "Devoid Donor", 2, 3);
+        builder.from_oracle_text_with_keywords(&["Devoid"], DEVOID);
+        builder.id()
+    };
+    let recipient = scenario.add_creature(P0, "Lazotep Host", 0, 0).id();
+    let mut state = scenario.build().state().clone();
+
+    assert!(
+        state.objects[&donor]
+            .base_static_definitions
+            .iter()
+            .any(|definition| {
+                definition.characteristic_defining
+                    && matches!(
+                        definition.modifications.as_slice(),
+                        [ContinuousModification::SetColor { colors }] if colors.is_empty()
+                    )
+            }),
+        "the test donor must carry Devoid's synthesized color CDA"
+    );
+
+    let modifications = copy_exception_modifications(
+        LAZOTEP_CONVERT,
+        "Lazotep Convert",
+        &["Creature".to_string()],
+    );
+    assert!(
+        modifications.contains(&ContinuousModification::AddColor {
+            color: ManaColor::Black,
+        }),
+        "Lazotep Convert must reach the folded additive-color exception: {modifications:?}"
+    );
+
+    resolve_self_copy(&mut state, recipient, donor, modifications);
+
+    let copied = &state.objects[&recipient];
+    assert_eq!(copied.name, "Devoid Donor");
+    assert_eq!((copied.power, copied.toughness), (Some(4), Some(4)));
+    assert!(copied.card_types.subtypes.contains(&"Zombie".to_string()));
+    assert_eq!(copied.color, vec![ManaColor::Black]);
 }
 
 /// A non-foldable rider must leave *all* layer operations on the first copy;
