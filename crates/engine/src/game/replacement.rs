@@ -9195,21 +9195,17 @@ fn apply_single_replacement(
     // damage event only on its accepted branch. The shared damage applier reads
     // a definition's direct outcome (amount modification, prevention shield, or
     // redirection shield), so a decline must bypass every such outcome before
-    // that applier runs. The draw-skip shape is similarly direct, but
-    // `QuantityModification::Prevent` is only that shape for a Draw event;
-    // counter prevention must still reach its own applier after a decline.
+    // that applier runs. `QuantityModification::Prevent` is likewise a direct
+    // event outcome, regardless of which event-specific applier owns it: a
+    // declined optional draw-skip, counter-prevention, or future quantity
+    // prevention replacement must leave its original event unchanged.
     if matches!(branch, ReplacementBranch::Decline)
         && repl_def_ref.is_some_and(|repl_def| {
             replacement_mode_is_optional(&repl_def.mode)
-                && match &proposed {
-                    ProposedEvent::Draw { .. } => {
-                        repl_def.quantity_modification == Some(QuantityModification::Prevent)
-                    }
-                    ProposedEvent::Damage { .. } => {
-                        repl_def.damage_modification.is_some() || repl_def.shield_kind.is_shield()
-                    }
-                    _ => false,
-                }
+                && (repl_def.quantity_modification == Some(QuantityModification::Prevent)
+                    || (matches!(proposed, ProposedEvent::Damage { .. })
+                        && (repl_def.damage_modification.is_some()
+                            || repl_def.shield_kind.is_shield())))
         })
     {
         return Ok(proposed);
@@ -20881,12 +20877,12 @@ mod tests {
         }
     }
 
-    /// The decline bypass is event-specific: `QuantityModification::Prevent`
-    /// means a skipped original draw only for `ProposedEvent::Draw`. An optional
-    /// counter-prevention replacement still uses its AddCounter applier when the
-    /// player takes its decline branch.
+    /// `QuantityModification::Prevent` is a definition-driven replacement
+    /// outcome for every event applier that recognizes it. Declining an optional
+    /// counter-prevention replacement must therefore preserve the original
+    /// counter event, just as an optional draw-skip decline preserves its draw.
     #[test]
-    fn optional_counter_prevention_decline_reaches_counter_applier() {
+    fn optional_counter_prevention_decline_leaves_counter_event_unchanged() {
         let source = ObjectId(90);
         let mut repl = ReplacementDefinition::new(ReplacementEvent::AddCounter)
             .quantity_modification(QuantityModification::Prevent);
@@ -20904,6 +20900,7 @@ mod tests {
             applied: HashSet::new(),
         };
 
+        let expected = event.clone();
         let result = apply_single_replacement(
             &mut state,
             event,
@@ -20912,7 +20909,11 @@ mod tests {
             &registry,
             &mut events,
         );
-        assert!(matches!(result, Err(ApplyResult::Prevented)));
+        assert_eq!(
+            result,
+            Ok(expected),
+            "declining optional counter prevention must preserve the original counter event"
+        );
     }
 
     #[test]
