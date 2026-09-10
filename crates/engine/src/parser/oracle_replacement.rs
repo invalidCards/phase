@@ -11945,8 +11945,10 @@ fn parse_damage_prevention_replacement(
         {
             // Keep compound player/permanent recipients ahead of the bare
             // controller scan: "to you or another permanent you control" is
-            // one recipient domain, not a player-only shield.
-            (Some(tf), false)
+            // one recipient domain, not a player-only shield. Its rider's
+            // anaphor refers to the actual damage recipient for every player
+            // scope (controller, opponent, or source-chosen player).
+            (Some(tf), true)
         } else if nom_primitives::scan_contains(working_lower, "dealt to you")
             || nom_primitives::scan_contains(working_lower, "deal to you")
         {
@@ -12114,13 +12116,15 @@ fn parse_damage_prevention_replacement(
     // the prevented event's damage recipient, exactly like a typed `valid_card`
     // does — so the cohort-2 anaphor rewrite must fire for it too.
     let recipient_is_event_filter = valid_card_filter.is_some() || recipient_from_event;
-    // CR 301.5f/303.4b: an OBJECT-recipient shield (typed `valid_card`, e.g.
-    // Panther Habit's equipped creature) rebinds a bare "it" rider to the damage
-    // recipient. Compute by borrow BEFORE the move below; the self-scoped cohort
-    // (`valid_card == SelfRef` — Anti-Venom, Unbreathing Horde) is excluded so it
-    // keeps its source-referring rider.
-    let recipient_is_object =
-        matches!(&valid_card_filter, Some(f) if !matches!(f, TargetFilter::SelfRef));
+    // CR 615.5: an object-recipient shield (typed `valid_card`, e.g. Panther
+    // Habit's equipped creature) or a compound player/permanent scope rebinds a
+    // bare "it" rider to the actual damage recipient. The compound scope's
+    // recipient is event-derived even though it does not use `valid_card`.
+    // Compute by borrow BEFORE the move below; the self-scoped cohort
+    // (`valid_card == SelfRef` — Anti-Venom, Unbreathing Horde) is excluded so
+    // it keeps its source-referring rider.
+    let recipient_is_object = recipient_from_event
+        || matches!(&valid_card_filter, Some(f) if !matches!(f, TargetFilter::SelfRef));
     // CR 608.2k: A self-scoped shield ("dealt to ~") rebinds the rider's dangling
     // anaphor to the SOURCE, not the event recipient — see the follow-up rewrite
     // branch below. Kept as its own predicate (rather than `!recipient_is_object`)
@@ -12211,10 +12215,10 @@ fn parse_damage_prevention_replacement(
             if recipient_is_event_filter {
                 rewrite_parent_target_to_post_replacement_damage_target(&mut followup_def);
             }
-            // CR 615.5 + CR 301.5f/303.4b: in an object-recipient shield a bare
-            // "it" in the prevented-amount rider (Panther Habit "put that many
-            // +1/+1 counters on it") lowers to SelfRef but means the damage
-            // recipient.
+            // CR 615.5: in an object-recipient or compound player/permanent
+            // shield, a bare "it" in the prevented-amount rider (Panther Habit
+            // "put that many +1/+1 counters on it") lowers to SelfRef but means
+            // the event's actual damage recipient.
             if recipient_is_object {
                 rewrite_self_ref_to_post_replacement_damage_target(&mut followup_def);
             }

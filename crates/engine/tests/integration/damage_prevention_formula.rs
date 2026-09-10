@@ -35,6 +35,7 @@ const SHIELD_OF_THE_AVATAR: &str = "If a source would deal damage to equipped cr
 const COVER_OF_WINTER: &str = "Cumulative upkeep {S} (At the beginning of your upkeep, put an age counter on this permanent, then sacrifice it unless you pay its upkeep cost for each age counter on it. {S} can be paid with one mana from a snow source.)\nIf a creature would deal combat damage to you and/or one or more creatures you control, prevent X of that damage, where X is the number of age counters on this enchantment.\n{S}: Put an age counter on this enchantment.";
 const BENEVOLENT_UNICORN: &str =
     "If a spell would deal damage to a permanent or player, it deals that much damage minus 1 to that permanent or player instead.";
+const COMPOUND_OPPONENT_PREVENTION_RIDER: &str = "If a source would deal damage to an opponent or a permanent an opponent controls, prevent that damage. Put a +1/+1 counter on it for each 1 damage prevented this way.";
 const DAMAGE_SPELL: &str = "This spell deals 3 damage to target creature or player.";
 
 fn damage_ability(
@@ -164,6 +165,69 @@ fn gisela_rounds_up_and_affected_player_orders_against_a_doubler() {
         gisela_object.keywords.contains(&Keyword::Flying)
             && gisela_object.keywords.contains(&Keyword::FirstStrike),
         "Gisela's keyword-aware Oracle fixture must retain Flying and first strike"
+    );
+}
+
+/// CR 615.5: a compound opponent-recipient prevention rider must follow the
+/// actual damaged permanent, rather than the prevention source or damage source.
+#[test]
+fn compound_opponent_prevention_rider_targets_the_damaged_permanent() {
+    let mut scenario = GameScenario::new();
+    let prevention_source = scenario
+        .add_enchantment_from_oracle(
+            P0,
+            "Compound Opponent Prevention",
+            COMPOUND_OPPONENT_PREVENTION_RIDER,
+        )
+        .id();
+    let damage_source = scenario.add_creature(P0, "Damage Source", 3, 3).id();
+    let damaged_permanent = scenario.add_creature(P1, "Damaged Permanent", 1, 5).id();
+    let mut runner = scenario.build();
+
+    assert_eq!(
+        runner.state().objects[&prevention_source]
+            .replacement_definitions
+            .len(),
+        1,
+        "reach guard: the compound prevention fixture must install its replacement"
+    );
+
+    let mut events = Vec::new();
+    deal_damage::resolve(
+        runner.state_mut(),
+        &damage_ability(damage_source, P0, TargetRef::Object(damaged_permanent), 3),
+        &mut events,
+    )
+    .expect("damage must run through the normal replacement pipeline");
+
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            engine::types::events::GameEvent::DamagePrevented { amount: 3, .. }
+        )),
+        "reach guard: the compound prevention replacement must actually prevent damage; events={events:?}"
+    );
+    assert_eq!(
+        runner.state().objects[&damaged_permanent].damage_marked,
+        0,
+        "the prevented event must not mark damage on its recipient"
+    );
+    assert_eq!(
+        runner.state().objects[&damaged_permanent].counters[&CounterType::Plus1Plus1],
+        3,
+        "the rider's counters must land on P1's actual damaged permanent"
+    );
+    assert!(
+        !runner.state().objects[&prevention_source]
+            .counters
+            .contains_key(&CounterType::Plus1Plus1),
+        "the prevention source is not the damage recipient"
+    );
+    assert!(
+        !runner.state().objects[&damage_source]
+            .counters
+            .contains_key(&CounterType::Plus1Plus1),
+        "the damage source is not the damage recipient"
     );
 }
 

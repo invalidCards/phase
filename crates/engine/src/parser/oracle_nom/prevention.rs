@@ -4,7 +4,7 @@
 use std::num::NonZeroU32;
 
 use nom::branch::alt;
-use nom::bytes::complete::tag;
+use nom::bytes::complete::{tag, take_till1};
 use nom::combinator::{map, map_opt, rest, value};
 use nom::sequence::{preceded, terminated};
 use nom::Parser;
@@ -73,12 +73,35 @@ pub fn has_event_relative_prevention_amount(input: &str) -> bool {
 /// Classify an each-time prevention formula that needs a continuous, repeatable
 /// damage-event watcher in addition to its event-relative amount.
 pub fn has_each_time_event_relative_prevention(input: &str) -> bool {
-    has_event_relative_prevention_amount(input)
-        && crate::parser::oracle_nom::primitives::scan_at_word_boundaries(input, |candidate| {
-            tag::<_, _, crate::parser::oracle_nom::error::OracleError<'_>>("each time ")
-                .parse(candidate)
-        })
-        .is_some()
+    crate::parser::oracle_nom::primitives::scan_at_word_boundaries(
+        input,
+        parse_each_time_event_relative_prevention,
+    )
+    .is_some()
+}
+
+/// Recognize one complete event-relative prevention watcher. The event clause
+/// and its prevention formula must share the same sentence, rather than two
+/// independent scans accidentally binding unrelated phrases on a card.
+fn parse_each_time_event_relative_prevention(input: &str) -> OracleResult<'_, ()> {
+    preceded(
+        tag("each time "),
+        preceded(
+            terminated(
+                take_till1(|character| matches!(character, ',' | '.' | '\n' | '\r')),
+                tag(", prevent "),
+            ),
+            // `parse_damage_prevention_formula` accepts the fully understood
+            // forms. The bare heads remain deliberately unsupported, but this
+            // classifier must recognize them so the caller emits an honest gap.
+            alt((
+                value((), parse_damage_prevention_formula),
+                value((), tag("x of that damage")),
+                value((), tag("half that damage")),
+            )),
+        ),
+    )
+    .parse(input)
 }
 
 #[cfg(test)]
@@ -115,10 +138,31 @@ mod tests {
     #[test]
     fn classifies_each_time_event_relative_prevention() {
         assert!(has_each_time_event_relative_prevention(
+            "until end of turn, each time damage is dealt to target creature or player, prevent x of that damage, where x is a number from 1 to 3 chosen at random each time."
+        ));
+        assert!(has_each_time_event_relative_prevention(
             "each time a source would deal damage to you, prevent half that damage."
+        ));
+        assert!(has_each_time_event_relative_prevention(
+            "each time a source would deal damage to you, prevent half that damage, rounded up."
         ));
         assert!(!has_each_time_event_relative_prevention(
             "prevent half that damage, rounded up."
+        ));
+        assert!(!has_each_time_event_relative_prevention(
+            "each time a source would deal damage to you. Prevent half that damage."
+        ));
+        assert!(!has_each_time_event_relative_prevention(
+            "each time a source would deal damage to you\nprevent half that damage."
+        ));
+        assert!(!has_each_time_event_relative_prevention(
+            "each time a source would deal damage to you\r\nprevent half that damage."
+        ));
+        assert!(!has_each_time_event_relative_prevention(
+            "each time a source would deal damage to you\rprevent half that damage."
+        ));
+        assert!(!has_each_time_event_relative_prevention(
+            "each time a player draws a card, they gain 1 life. Prevent half that damage."
         ));
     }
 }
