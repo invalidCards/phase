@@ -8103,9 +8103,10 @@ fn parse_damage_source_controller_tail(input: &str) -> OracleResult<'_, DamageRe
     .parse(input)
 }
 
-/// CR 614.1a + CR 614.9 + CR 514.2: Effect-created, duration-bound source
-/// redirection: all damage that would be dealt this turn to a victim by a
-/// declared target source is dealt to that source's controller instead.
+/// CR 611.2a + CR 614.1a + CR 614.9 + CR 514.2: Effect-created,
+/// duration-bound source redirection: all damage that would be dealt this turn
+/// to a victim by a declared target source is dealt to that source's controller
+/// instead.
 ///
 /// The grammar is fully anchored. Its two independent duration positions cover
 /// Mirror Strike's post-victim spelling and Reverberation's pre-victim spelling.
