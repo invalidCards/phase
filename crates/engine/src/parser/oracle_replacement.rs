@@ -7935,13 +7935,20 @@ fn parse_continuous_all_damage_redirect(norm_lower: &str) -> Option<Effect> {
     })
 }
 
-/// Split the one-shot body at the "this turn[,]" boundary into the would-deal
+/// Split the one-shot body at its current-window boundary into the would-deal
 /// clause (source + original recipient) and the result clause (redirect /
-/// amount / prevention). The result clause is what follows "this turn".
+/// amount / prevention). The window is either "this turn" or "this combat";
+/// both delimit a complete one-shot prevention clause before its result.
 fn split_would_deal_clause(body: &str) -> (&str, &str) {
-    match nom_primitives::split_once_on(body, "this turn") {
+    match alt((
+        |input| nom_primitives::split_once_on(input, "this turn"),
+        |input| nom_primitives::split_once_on(input, "this combat"),
+    ))
+    .parse(body)
+    {
         Ok((_, (before, after))) => {
-            // `after` begins after "this turn"; trim a leading comma/space.
+            // `after` begins after the duration phrase; trim a leading
+            // comma/space before parsing the replacement result.
             let after = after.trim_start_matches([',', ' ']);
             (before, after)
         }
