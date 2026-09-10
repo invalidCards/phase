@@ -326,7 +326,7 @@ pub fn resolve(
                 // source-role offset keeps a future source-targeted version of
                 // that grammar from borrowing the source as its destination.
                 let chosen_redirect = redirect_slot
-                    .or_else(|| Some(source_slot_count))
+                    .or(Some(source_slot_count))
                     .and_then(|slot| chosen_redirect_object(ability, slot));
                 if let Some(id) = chosen_redirect {
                     shield = shield.redirect_target(TargetFilter::SpecificObject { id });
