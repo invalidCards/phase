@@ -91,7 +91,7 @@ fn pass_priority_to(runner: &mut engine::game::scenario::GameRunner, player: Pla
 }
 
 #[test]
-fn exact_source_controller_oracle_texts_route_through_priority_8a() {
+fn exact_source_controller_oracle_texts_route_through_oneshot_damage_replacement() {
     let mirror = spell_effect(MIRROR_STRIKE, "Mirror Strike");
     let reverberation = spell_effect(REVERBERATION, "Reverberation");
     let reflect = spell_effect(REFLECT_DAMAGE, "Reflect Damage");
@@ -212,6 +212,55 @@ fn invalid_declared_damage_source_cannot_rebind_a_later_redirect_target() {
             .is_empty()
             && runner.state().pending_damage_replacements.is_empty(),
         "an illegal source role installs no replacement shield"
+    );
+}
+
+#[test]
+fn legal_declared_damage_source_installs_a_redirect_replacement() {
+    let creature = TargetFilter::Typed(TypedFilter::default().with_type(TypeFilter::Creature));
+    let mut scenario = GameScenario::new();
+    let shield_source = scenario.add_creature(P0, "Shield source", 1, 1).id();
+    let declared_source = scenario.add_creature(P1, "Declared source", 2, 2).id();
+    let redirect_recipient = scenario.add_creature(P0, "Redirect recipient", 3, 3).id();
+    let mut runner = scenario.build();
+
+    let original = ResolvedAbility::new(
+        Effect::CreateDamageReplacement {
+            source_filter: Some(TargetFilter::And {
+                filters: vec![
+                    TargetFilter::ParentTargetSlot { index: 0 },
+                    creature.clone(),
+                ],
+            }),
+            combat_scope: None,
+            target_filter: None,
+            modification: None,
+            redirect_to: Some(DamageRedirectTarget::ChosenObjectTarget),
+            redirect_amount: None,
+            redirect_object_filter: Some(creature),
+            recipient_object_filter: None,
+            redirect_lifetime: RedirectionLifetime::OneOpportunity,
+        },
+        vec![
+            TargetRef::Object(declared_source),
+            TargetRef::Object(redirect_recipient),
+        ],
+        shield_source,
+        P0,
+    );
+
+    let validated =
+        engine::game::ability_utils::validate_targets_in_chain(runner.state(), &original);
+    assert_eq!(validated.targets, original.targets);
+
+    let mut events = Vec::new();
+    create_damage_replacement::resolve(runner.state_mut(), &validated, &mut events)
+        .expect("a fully legal CDR instruction resolves");
+    assert!(
+        !runner.state().objects[&shield_source]
+            .replacement_definitions
+            .is_empty(),
+        "the legal declared source and redirect recipient install a replacement shield"
     );
 }
 
@@ -358,7 +407,10 @@ fn reflect_damage_choice_redirects_only_the_chosen_sources_next_event() {
 fn reverberation_redirects_to_a_stolen_spells_live_controller() {
     let p2 = PlayerId(2);
     let mut scenario = GameScenario::new_n_player(3, 42);
-    scenario.at_phase(Phase::PreCombatMain);
+    scenario.at_phase(Phase::End);
+    scenario.with_library_top(P0, &["P0 draw"]);
+    scenario.with_library_top(P1, &["P1 draw"]);
+    scenario.with_library_top(p2, &["P2 draw"]);
     let axe = scenario
         .add_spell_to_hand_from_oracle(P1, "Lava Axe", false, LAVA_AXE)
         .with_mana_cost(engine::types::mana::ManaCost::zero())
@@ -373,10 +425,18 @@ fn reverberation_redirects_to_a_stolen_spells_live_controller() {
         .id();
     let mut runner = scenario.build();
 
+    for _ in 0..12 {
+        if runner.state().phase == Phase::PreCombatMain {
+            break;
+        }
+        runner
+            .act(GameAction::PassPriority)
+            .expect("production priority passing advances P0's end step into P1's main phase");
+    }
+    assert_eq!(runner.state().phase, Phase::PreCombatMain);
+    pass_priority_to(&mut runner, P1);
+
     // P1 casts Axe. Then P1 and P2 pass, giving P0 the legal response window.
-    runner.state_mut().active_player = P1;
-    runner.state_mut().priority_player = P1;
-    runner.state_mut().waiting_for = WaitingFor::Priority { player: P1 };
     runner.cast(axe).target_player(P0).commit();
     pass_priority_to(&mut runner, P0);
     runner.cast(reverb).target_objects(&[axe]).commit();

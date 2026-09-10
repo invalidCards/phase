@@ -6558,15 +6558,14 @@ fn parse_normalized_oracle_ir(
         let prevention_effect_text = strip_ability_word_with_name(&line)
             .map(|(_, effect)| effect)
             .unwrap_or_else(|| line.clone());
+        let oneshot_damage_replacement = is_spell
+            .then(|| parse_oneshot_damage_replacement(&lower, &ctx))
+            .flatten();
         if is_spell
             && scan_contains(&lower, "prevent")
             && scan_contains(&lower, "damage")
             && !is_instead_replacement_line(&prevention_effect_text)
-            // Priority 8a owns duration-bound source redirection even though
-            // its English contains "prevent" only in an unrelated rider or
-            // classifier path. Let its success-only parser route Mirror Strike
-            // and Reverberation before the broad prevention-chain fallback.
-            && parse_oneshot_damage_replacement(&lower, &ctx).is_none()
+            && oneshot_damage_replacement.is_none()
         {
             ctx.subject = None;
             ctx.actor = None;
@@ -6595,19 +6594,13 @@ fn parse_normalized_oracle_ir(
             }
         }
 
-        // Priority 8a: Effect-created damage replacements on spells. This is
-        // deliberately parser-success routed (not lexically pre-guarded): the
-        // same grammar owns Mirror Strike, Reverberation, and Reflect Damage,
-        // while a declined line continues to static replacement handling.
-        if is_spell {
-            if let Some(effect) = parse_oneshot_damage_replacement(&lower, &ctx) {
-                emitter.ability_at(
-                    item_line,
-                    AbilityDefinition::new(AbilityKind::Spell, effect).description(line.clone()),
-                );
-                i += 1;
-                continue;
-            }
+        if let Some(effect) = oneshot_damage_replacement {
+            emitter.ability_at(
+                item_line,
+                AbilityDefinition::new(AbilityKind::Spell, effect).description(line.clone()),
+            );
+            i += 1;
+            continue;
         }
 
         // Priority 8: Replacement patterns

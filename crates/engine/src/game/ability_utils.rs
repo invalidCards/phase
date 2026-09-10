@@ -2743,22 +2743,18 @@ pub(crate) enum DamageReplacementTargetRole<'a> {
 /// instruction cannot use information from an illegal role.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DamageReplacementTargetRoleLegality {
-    NoDeclaredRoles,
-    AllLegal,
-    SomeLegal,
-    NoneLegal,
+    All,
+    Partial,
+    None,
 }
 
 impl DamageReplacementTargetRoleLegality {
     pub(crate) fn has_any_legal_role(self) -> bool {
-        matches!(
-            self,
-            Self::NoDeclaredRoles | Self::AllLegal | Self::SomeLegal
-        )
+        matches!(self, Self::All | Self::Partial)
     }
 
     pub(crate) fn all_required_roles_are_legal(self) -> bool {
-        matches!(self, Self::NoDeclaredRoles | Self::AllLegal)
+        matches!(self, Self::All)
     }
 }
 
@@ -2797,7 +2793,7 @@ pub(crate) fn damage_replacement_target_roles(
     if let Some(filter) = redirect_object_filter {
         roles.push(DamageReplacementTargetRole::RedirectRecipient(filter));
     }
-    Some(roles)
+    (!roles.is_empty()).then_some(roles)
 }
 
 /// CR 608.2b: Revalidate every CDR role against its original declaration-order
@@ -2807,9 +2803,6 @@ pub(crate) fn damage_replacement_target_role_legality(
     ability: &ResolvedAbility,
 ) -> Option<DamageReplacementTargetRoleLegality> {
     let roles = damage_replacement_target_roles(&ability.effect)?;
-    if roles.is_empty() {
-        return Some(DamageReplacementTargetRoleLegality::NoDeclaredRoles);
-    }
 
     let legal_count = roles
         .iter()
@@ -2828,9 +2821,9 @@ pub(crate) fn damage_replacement_target_role_legality(
         .count();
 
     Some(match legal_count {
-        0 => DamageReplacementTargetRoleLegality::NoneLegal,
-        count if count == roles.len() => DamageReplacementTargetRoleLegality::AllLegal,
-        _ => DamageReplacementTargetRoleLegality::SomeLegal,
+        0 => DamageReplacementTargetRoleLegality::None,
+        count if count == roles.len() => DamageReplacementTargetRoleLegality::All,
+        _ => DamageReplacementTargetRoleLegality::Partial,
     })
 }
 
