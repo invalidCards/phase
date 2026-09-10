@@ -6,7 +6,7 @@ use engine::game::scenario::{GameScenario, P0, P1};
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{
     AbilityKind, CombatDamageScope, DamageRedirectTarget, Effect, QuantityExpr,
-    RedirectionLifetime, ResolvedAbility, TargetFilter, TargetRef,
+    RedirectionLifetime, ResolvedAbility, TargetFilter, TargetRef, TypeFilter, TypedFilter,
 };
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
@@ -15,6 +15,7 @@ use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
+use engine::types::zones::Zone;
 
 const MIRROR_STRIKE: &str =
     "All combat damage that would be dealt to you this turn by target unblocked creature is dealt to its controller instead.";
@@ -136,6 +137,67 @@ fn exact_source_controller_oracle_texts_route_through_priority_8a() {
             ..
         }
     ));
+}
+
+/// CR 115.1a + CR 608.2b + CR 614.9: all declared roles define a single
+/// replacement event. If the source target becomes illegal while the later
+/// redirect-recipient target remains legal, resolution must fizzle rather than
+/// compacting the recipient into the source slot and installing a misbound
+/// shield.
+#[test]
+fn invalid_declared_damage_source_cannot_rebind_a_later_redirect_target() {
+    let creature = TargetFilter::Typed(TypedFilter::default().with_type(TypeFilter::Creature));
+    let mut scenario = GameScenario::new();
+    let shield_source = scenario.add_creature(P0, "Shield source", 1, 1).id();
+    let declared_source = scenario.add_creature(P1, "Declared source", 2, 2).id();
+    let redirect_recipient = scenario.add_creature(P0, "Redirect recipient", 3, 3).id();
+    let mut runner = scenario.build();
+
+    let original = ResolvedAbility::new(
+        Effect::CreateDamageReplacement {
+            source_filter: Some(TargetFilter::And {
+                filters: vec![
+                    TargetFilter::ParentTargetSlot { index: 0 },
+                    creature.clone(),
+                ],
+            }),
+            combat_scope: None,
+            target_filter: None,
+            modification: None,
+            redirect_to: Some(DamageRedirectTarget::ChosenObjectTarget),
+            redirect_amount: None,
+            redirect_object_filter: Some(creature),
+            recipient_object_filter: None,
+            redirect_lifetime: RedirectionLifetime::OneOpportunity,
+        },
+        vec![
+            TargetRef::Object(declared_source),
+            TargetRef::Object(redirect_recipient),
+        ],
+        shield_source,
+        P0,
+    );
+
+    // The recipient remains a legal creature, while only the first (source)
+    // role has become illegal after target declaration.
+    engine::game::zones::move_to_zone(
+        runner.state_mut(),
+        declared_source,
+        Zone::Graveyard,
+        &mut Vec::new(),
+    );
+    assert!(runner.state().battlefield.contains(&redirect_recipient));
+
+    let validated =
+        engine::game::ability_utils::validate_targets_in_chain(runner.state(), &original);
+    assert!(
+        validated.targets.is_empty(),
+        "a later role must never slide into ParentTargetSlot(0): {validated:?}"
+    );
+    assert!(
+        engine::game::targeting::check_fizzle(&original.targets, &validated.targets),
+        "the stack resolver must skip installation rather than create a malformed shield"
+    );
 }
 
 #[test]

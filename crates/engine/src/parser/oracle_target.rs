@@ -4526,7 +4526,9 @@ fn starts_with_article_core_type_segment(text: &str) -> bool {
 fn target_filter_has_meaningful_content(filter: &TargetFilter) -> bool {
     match filter {
         TargetFilter::Typed(tf) => !tf.type_filters.is_empty() || !tf.properties.is_empty(),
-        TargetFilter::TrackedSet { .. } | TargetFilter::TrackedSetFiltered { .. } => true,
+        TargetFilter::StackSpell
+        | TargetFilter::TrackedSet { .. }
+        | TargetFilter::TrackedSetFiltered { .. } => true,
         TargetFilter::Or { filters } | TargetFilter::And { filters } => {
             filters.iter().any(target_filter_has_meaningful_content)
         }
@@ -4562,6 +4564,30 @@ pub(crate) fn parse_declared_damage_source_target<'a>(
             filters: vec![TargetFilter::ParentTargetSlot { index: 0 }, filter],
         },
     ))
+}
+
+#[cfg(test)]
+mod declared_damage_source_target_tests {
+    use super::*;
+
+    /// CR 109.2 + CR 601.2c + CR 609.7a: a bare declared "target spell" is
+    /// a meaningful source target, and its source binding must retain the
+    /// stack-zone scope rather than declining as an empty typed filter.
+    #[test]
+    fn bare_target_spell_is_a_stack_scoped_declared_damage_source() {
+        let (rest, filter) = parse_declared_damage_source_target("target spell")
+            .expect("a bare target spell must be accepted as a damage source");
+        assert_eq!(rest, "");
+        assert_eq!(
+            filter,
+            TargetFilter::And {
+                filters: vec![
+                    TargetFilter::ParentTargetSlot { index: 0 },
+                    TargetFilter::StackSpell,
+                ],
+            }
+        );
+    }
 }
 
 /// CR 608.2c: True when a typed filter carries a `FilterProp` PREDICATE beyond

@@ -2517,19 +2517,32 @@ pub fn validate_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -
     } else if let Some(roles) = damage_replacement_target_roles(&validated.effect) {
         // CR 115.1a + CR 601.2c + CR 608.2b: each declared damage-replacement
         // role is independently targeted and revalidated in its declared order.
+        // The roles jointly specify one replacement event, so none can be
+        // compacted away: doing so would slide a later recipient or redirect
+        // destination into the declared-source position. If any declared role
+        // is illegal, clear this node's targets so the ordinary CR 608.2b fizzle
+        // check prevents a malformed replacement from being installed.
+        //
         // In particular, a stack spell source must not be checked against the
         // recipient or redirect-destination filter just because it occupies
         // `targets[0]`.
-        let mut kept = Vec::new();
-        for (target, role) in validated.targets.iter().zip(roles) {
-            kept.extend(validate_pinned_targets(
-                state,
-                std::slice::from_ref(target),
-                role.filter(),
-                &validated,
-            ));
+        let mut target_iter = validated.targets.iter();
+        let all_roles_legal = roles.iter().all(|role| {
+            target_iter.next().is_some_and(|target| {
+                !validate_pinned_targets(
+                    state,
+                    std::slice::from_ref(target),
+                    role.filter(),
+                    &validated,
+                )
+                .is_empty()
+            })
+        });
+        if all_roles_legal {
+            validated.targets.clone()
+        } else {
+            Vec::new()
         }
-        kept
     } else if let Some(src_leaf) = damage_replacement_source_slot_filter(&validated.effect).cloned()
     {
         // CR 608.2b + CR 609.7a: A source-scoped `PreventDamage` carries its
