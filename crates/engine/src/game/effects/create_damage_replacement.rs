@@ -1,4 +1,7 @@
-use crate::game::ability_utils::{damage_replacement_target_roles, DamageReplacementTargetRole};
+use crate::game::ability_utils::{
+    damage_replacement_target_role_legality, damage_replacement_target_roles,
+    DamageReplacementTargetRole,
+};
 use crate::game::effects::choose_damage_source;
 use crate::game::effects::prevent_damage::resolve_source_filter;
 use crate::game::game_object::AttachTarget;
@@ -74,6 +77,22 @@ pub fn resolve(
             ))
         }
     };
+
+    // CR 608.2b + CR 614.9: a spell with some remaining legal targets resolves
+    // normally, but a damage replacement needs every one of its declared roles
+    // to define a single replacement event. Do not install a partial shield or
+    // reinterpret a later role at an earlier slot; other chained instructions
+    // still resolve through the ordinary effect pipeline.
+    if damage_replacement_target_role_legality(state, ability)
+        .is_some_and(|legality| !legality.all_required_roles_are_legal())
+    {
+        events.push(GameEvent::EffectResolved {
+            kind: EffectKind::CreateDamageReplacement,
+            source_id: ability.source_id,
+            subject: None,
+        });
+        return Ok(());
+    }
 
     // CR 609.7a + CR 614.9: "a source of your choice" / "that source" — the
     // damage source is a player choice. Resolve it to a concrete object NOW so

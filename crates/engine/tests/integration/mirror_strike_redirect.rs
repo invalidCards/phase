@@ -1,7 +1,7 @@
 //! Exact Oracle routing coverage for source-controller damage redirection.
 
 use engine::game::combat::AttackTarget;
-use engine::game::effects::deal_damage;
+use engine::game::effects::{create_damage_replacement, deal_damage};
 use engine::game::scenario::{GameScenario, P0, P1};
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{
@@ -141,8 +141,8 @@ fn exact_source_controller_oracle_texts_route_through_priority_8a() {
 
 /// CR 115.1a + CR 608.2b + CR 614.9: all declared roles define a single
 /// replacement event. If the source target becomes illegal while the later
-/// redirect-recipient target remains legal, resolution must fizzle rather than
-/// compacting the recipient into the source slot and installing a misbound
+/// redirect-recipient target remains legal, the spell still resolves but this
+/// CDR instruction does nothing; its positions cannot compact into a misbound
 /// shield.
 #[test]
 fn invalid_declared_damage_source_cannot_rebind_a_later_redirect_target() {
@@ -190,13 +190,28 @@ fn invalid_declared_damage_source_cannot_rebind_a_later_redirect_target() {
 
     let validated =
         engine::game::ability_utils::validate_targets_in_chain(runner.state(), &original);
-    assert!(
-        validated.targets.is_empty(),
-        "a later role must never slide into ParentTargetSlot(0): {validated:?}"
+    assert_eq!(
+        validated.targets, original.targets,
+        "a legal later role preserves the original declaration-order slots: {validated:?}"
     );
     assert!(
-        engine::game::targeting::check_fizzle(&original.targets, &validated.targets),
-        "the stack resolver must skip installation rather than create a malformed shield"
+        !engine::game::targeting::check_fizzle(&original.targets, &validated.targets),
+        "CR 608.2b keeps the spell resolving while its later target remains legal"
+    );
+
+    let mut events = Vec::new();
+    create_damage_replacement::resolve(runner.state_mut(), &validated, &mut events)
+        .expect("a partial CDR instruction resolves as a no-op");
+    assert!(matches!(
+        events.as_slice(),
+        [GameEvent::EffectResolved { .. }]
+    ));
+    assert!(
+        runner.state().objects[&shield_source]
+            .replacement_definitions
+            .is_empty()
+            && runner.state().pending_damage_replacements.is_empty(),
+        "an illegal source role installs no replacement shield"
     );
 }
 

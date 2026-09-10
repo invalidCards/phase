@@ -2514,31 +2514,21 @@ pub fn validate_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -
             kept.extend(explicit);
             kept
         }
-    } else if let Some(roles) = damage_replacement_target_roles(&validated.effect) {
+    } else if let Some(role_legality) = damage_replacement_target_role_legality(state, &validated) {
         // CR 115.1a + CR 601.2c + CR 608.2b: each declared damage-replacement
         // role is independently targeted and revalidated in its declared order.
         // The roles jointly specify one replacement event, so none can be
         // compacted away: doing so would slide a later recipient or redirect
-        // destination into the declared-source position. If any declared role
-        // is illegal, clear this node's targets so the ordinary CR 608.2b fizzle
-        // check prevents a malformed replacement from being installed.
+        // destination into the declared-source position. Preserve the original
+        // role positions whenever any role remains legal: CR 608.2b lets the
+        // spell resolve in that case, and the CDR resolver independently turns
+        // the incomplete replacement instruction into a no-op. Only when every
+        // declared role is illegal do we clear them for the normal fizzle check.
         //
         // In particular, a stack spell source must not be checked against the
         // recipient or redirect-destination filter just because it occupies
         // `targets[0]`.
-        let mut target_iter = validated.targets.iter();
-        let all_roles_legal = roles.iter().all(|role| {
-            target_iter.next().is_some_and(|target| {
-                !validate_pinned_targets(
-                    state,
-                    std::slice::from_ref(target),
-                    role.filter(),
-                    &validated,
-                )
-                .is_empty()
-            })
-        });
-        if all_roles_legal {
+        if role_legality.has_any_legal_role() {
             validated.targets.clone()
         } else {
             Vec::new()
@@ -2746,6 +2736,32 @@ pub(crate) enum DamageReplacementTargetRole<'a> {
     RedirectRecipient(&'a TargetFilter),
 }
 
+/// Resolution-time legality of the declared roles for a damage replacement.
+///
+/// The variants distinguish a fully valid replacement instruction from the
+/// partially legal spell case in CR 608.2b: the latter resolves, but its CDR
+/// instruction cannot use information from an illegal role.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DamageReplacementTargetRoleLegality {
+    NoDeclaredRoles,
+    AllLegal,
+    SomeLegal,
+    NoneLegal,
+}
+
+impl DamageReplacementTargetRoleLegality {
+    pub(crate) fn has_any_legal_role(self) -> bool {
+        matches!(
+            self,
+            Self::NoDeclaredRoles | Self::AllLegal | Self::SomeLegal
+        )
+    }
+
+    pub(crate) fn all_required_roles_are_legal(self) -> bool {
+        matches!(self, Self::NoDeclaredRoles | Self::AllLegal)
+    }
+}
+
 impl<'a> DamageReplacementTargetRole<'a> {
     pub(crate) fn filter(self) -> &'a TargetFilter {
         match self {
@@ -2782,6 +2798,40 @@ pub(crate) fn damage_replacement_target_roles(
         roles.push(DamageReplacementTargetRole::RedirectRecipient(filter));
     }
     Some(roles)
+}
+
+/// CR 608.2b: Revalidate every CDR role against its original declaration-order
+/// slot. A later legal target never substitutes for an earlier illegal role.
+pub(crate) fn damage_replacement_target_role_legality(
+    state: &GameState,
+    ability: &ResolvedAbility,
+) -> Option<DamageReplacementTargetRoleLegality> {
+    let roles = damage_replacement_target_roles(&ability.effect)?;
+    if roles.is_empty() {
+        return Some(DamageReplacementTargetRoleLegality::NoDeclaredRoles);
+    }
+
+    let legal_count = roles
+        .iter()
+        .enumerate()
+        .filter(|(index, role)| {
+            ability.targets.get(*index).is_some_and(|target| {
+                !validate_pinned_targets(
+                    state,
+                    std::slice::from_ref(target),
+                    role.filter(),
+                    ability,
+                )
+                .is_empty()
+            })
+        })
+        .count();
+
+    Some(match legal_count {
+        0 => DamageReplacementTargetRoleLegality::NoneLegal,
+        count if count == roles.len() => DamageReplacementTargetRoleLegality::AllLegal,
+        _ => DamageReplacementTargetRoleLegality::SomeLegal,
+    })
 }
 
 /// CR 120.3a + CR 603.7c: Constrain a companion `ControllerRef::TargetPlayer`
