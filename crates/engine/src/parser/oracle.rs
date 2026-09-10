@@ -103,8 +103,9 @@ use super::oracle_modal::{
 use super::oracle_replacement::{
     find_copy_verb_present, lower_as_enters_becomes_choice_modal,
     lower_as_enters_or_face_up_counters, lower_replacement_ir,
-    parse_bidirectional_damage_prevention, parse_replacement_line, parse_replacement_line_ir,
-    parse_whenever_you_cast_enters_with_outcome, CastEntersWithOutcome,
+    parse_bidirectional_damage_prevention, parse_oneshot_damage_replacement,
+    parse_replacement_line, parse_replacement_line_ir, parse_whenever_you_cast_enters_with_outcome,
+    CastEntersWithOutcome,
 };
 use super::oracle_saga::{is_saga_chapter, parse_saga_chapters};
 use super::oracle_spacecraft::parse_spacecraft_threshold_lines;
@@ -6584,6 +6585,21 @@ fn parse_normalized_oracle_ir(
             let ir = parse_ability_ir_with_context(&line, AbilityKind::Spell, &mut ctx);
             if !has_unimplemented(&lower_ability_ir(&ir)) {
                 emitter.ability_ir_at(item_line, ir);
+                i += 1;
+                continue;
+            }
+        }
+
+        // Priority 8a: Effect-created damage replacements on spells. This is
+        // deliberately parser-success routed (not lexically pre-guarded): the
+        // same grammar owns Mirror Strike, Reverberation, and Reflect Damage,
+        // while a declined line continues to static replacement handling.
+        if is_spell {
+            if let Some(effect) = parse_oneshot_damage_replacement(&lower, &ctx) {
+                emitter.ability_at(
+                    item_line,
+                    AbilityDefinition::new(AbilityKind::Spell, effect).description(line.clone()),
+                );
                 i += 1;
                 continue;
             }

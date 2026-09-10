@@ -2514,7 +2514,8 @@ pub fn validate_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -
             kept.extend(explicit);
             kept
         }
-    } else if let Some(src_leaf) = prevent_damage_source_slot_filter(&validated.effect).cloned() {
+    } else if let Some(src_leaf) = damage_replacement_source_slot_filter(&validated.effect).cloned()
+    {
         // CR 608.2b + CR 609.7a: A source-scoped `PreventDamage` carries its
         // chosen source spell in `targets[0]`. `extract_target_filter_from_effect`
         // returns `None` for its `Any` recipient, so the generic `None` arm below
@@ -2683,25 +2684,26 @@ pub fn validate_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -
 /// Returns `None` for recipient-scoped or `ChosenDamageSource`/`IsChosenColor`
 /// ("by …" Arachnogenesis) prevents, so those are NOT diverted into a source
 /// target slot.
-fn prevent_damage_source_slot_filter(effect: &Effect) -> Option<&TargetFilter> {
-    let Effect::PreventDamage {
-        damage_source_filter: Some(TargetFilter::And { filters }),
-        ..
-    } = effect
-    else {
+fn damage_replacement_source_slot_filter(effect: &Effect) -> Option<&TargetFilter> {
+    let source_filter = match effect {
+        Effect::PreventDamage {
+            damage_source_filter,
+            ..
+        } => damage_source_filter.as_ref()?,
+        Effect::CreateDamageReplacement { source_filter, .. } => source_filter.as_ref()?,
+        _ => return None,
+    };
+    // The source-target contract is intentionally exact: its first declared
+    // target is captured by `ParentTargetSlot { index: 0 }`, followed by the
+    // source's live legality/recheck leaf. Other dynamic source forms do not
+    // announce a target slot.
+    let TargetFilter::And { filters } = source_filter else {
         return None;
     };
-    // Only an `And` that carries the `ParentTargetSlot` sentinel is a
-    // source-scoped capture; return the sibling choosable leaf.
-    if !filters
-        .iter()
-        .any(|f| matches!(f, TargetFilter::ParentTargetSlot { .. }))
-    {
+    let [TargetFilter::ParentTargetSlot { index: 0 }, source_leaf] = filters.as_slice() else {
         return None;
-    }
-    filters
-        .iter()
-        .find(|f| !matches!(f, TargetFilter::ParentTargetSlot { .. }))
+    };
+    Some(source_leaf)
 }
 
 /// CR 120.3a + CR 603.7c: Constrain a companion `ControllerRef::TargetPlayer`
@@ -3003,7 +3005,7 @@ fn collect_target_slots_inner(
     // do NOT `return`: the generic recipient logic still runs, but for the
     // source-scoped form `target == Any` so it adds nothing.
     if ability.target_choice_timing == TargetChoiceTiming::Stack {
-        if let Some(src_leaf) = prevent_damage_source_slot_filter(&ability.effect) {
+        if let Some(src_leaf) = damage_replacement_source_slot_filter(&ability.effect) {
             let legal_targets =
                 legal_targets_for_ability_filter(state, ability, src_leaf, &acc.slots);
             if legal_targets.is_empty() && !ability.optional_targeting {
@@ -5540,7 +5542,7 @@ fn collect_target_slot_specs(
     // `collect_target_slots` one-for-one so per-slot specs line up with the
     // surfaced TargetSelectionSlots (the choosable source spell, declared first).
     if ability.target_choice_timing == TargetChoiceTiming::Stack {
-        if let Some(src_leaf) = prevent_damage_source_slot_filter(&ability.effect) {
+        if let Some(src_leaf) = damage_replacement_source_slot_filter(&ability.effect) {
             let id = TargetInstanceId(*next_instance);
             *next_instance += 1;
             specs.push(TargetSlotSpec {
@@ -7887,7 +7889,7 @@ fn assign_targets_recursive(
     // sub-chain, so the modal sub (mode 3's PutCounter) consumes its own target
     // next. Slot order matches `collect_target_slots`: source slot first.
     if ability.target_choice_timing == TargetChoiceTiming::Stack
-        && prevent_damage_source_slot_filter(&ability.effect).is_some()
+        && damage_replacement_source_slot_filter(&ability.effect).is_some()
     {
         if let Some(target) = targets.get(*next_target) {
             ability.targets.push(target.clone());
@@ -8289,7 +8291,7 @@ fn assign_selected_slots_recursive(
     // be consumed into THIS node's `targets` here too, BEFORE descending into the
     // (modal) sub-chain. Slot order matches `collect_target_slots`: source first.
     if ability.target_choice_timing == TargetChoiceTiming::Stack
-        && prevent_damage_source_slot_filter(&ability.effect).is_some()
+        && damage_replacement_source_slot_filter(&ability.effect).is_some()
     {
         let Some(selected_slot) = selected_slots.get(*next_slot) else {
             return Err(EngineError::InvalidAction(
@@ -8817,7 +8819,7 @@ fn chain_has_target_sink(ability: &ResolvedAbility) -> bool {
     // pushes a source slot for it, and `assign_targets_recursive` consumes one
     // target into this node BEFORE descending into the (modal) sub-chain.
     if ability.target_choice_timing == TargetChoiceTiming::Stack
-        && prevent_damage_source_slot_filter(&ability.effect).is_some()
+        && damage_replacement_source_slot_filter(&ability.effect).is_some()
     {
         return true;
     }
@@ -8979,7 +8981,7 @@ fn node_slot_filters(ability: &ResolvedAbility) -> NodeSlotFilters {
     // Arm 1 — `PreventDamage` source slot (declared FIRST, not returned early,
     // exactly mirroring `collect_target_slot_specs`).
     if stack_timing {
-        if let Some(src) = prevent_damage_source_slot_filter(&ability.effect) {
+        if let Some(src) = damage_replacement_source_slot_filter(&ability.effect) {
             lead.push(src.clone());
         }
     }

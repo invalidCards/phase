@@ -7071,7 +7071,9 @@ pub(crate) fn parse_oneshot_damage_replacement(
     // leading "all " is disjoint from both "the next N damage" forms above and
     // from the "the next time" spine below, so ordering here is for readability,
     // not for disambiguation.
-    if let Some(effect) = parse_continuous_all_damage_redirect(norm_lower) {
+    if let Some(effect) = parse_continuous_source_damage_redirect(norm_lower)
+        .or_else(|| parse_continuous_all_damage_redirect(norm_lower))
+    {
         return Some(effect);
     }
 
@@ -7139,6 +7141,12 @@ pub(crate) fn parse_oneshot_damage_replacement(
 
     // CR 614.9: redirection one-shot.
     if let Some(redirect_to) = parse_redirect_recipient(result_clause) {
+        // "its controller" / "that source's controller" requires a source
+        // captured by the would-deal clause. Decline rather than inventing a
+        // recipient authority for a source-less redirection tail.
+        if redirect_to == DamageRedirectTarget::DamageSourceController && source_filter.is_none() {
+            return None;
+        }
         let redirect_object_filter = match redirect_to {
             DamageRedirectTarget::ChosenObjectTarget => {
                 parse_damage_to_target_filter(result_clause)
@@ -7153,6 +7161,7 @@ pub(crate) fn parse_oneshot_damage_replacement(
             // `parse_continuous_all_damage_redirect` is where that recipient
             // lives, and it likewise declares no slot.
             DamageRedirectTarget::Controller
+            | DamageRedirectTarget::DamageSourceController
             | DamageRedirectTarget::SourceObject
             | DamageRedirectTarget::AttachedToSource => None,
         };
@@ -8047,6 +8056,7 @@ fn parse_redirect_recipient_phrase(
     .parse(input)?;
     alt((
         value(DamageRedirectTarget::Controller, tag("you")),
+        parse_damage_source_controller_tail,
         value(DamageRedirectTarget::SourceObject, tag("~")),
         value(
             DamageRedirectTarget::ChosenObjectTarget,
@@ -8054,6 +8064,94 @@ fn parse_redirect_recipient_phrase(
         ),
     ))
     .parse(input)
+}
+
+/// CR 614.9: The recipient authority in a source-bound redirection tail. This
+/// intentionally has no unbound caller: "its controller" is meaningful here
+/// only after the grammar has captured a prospective damage source.
+fn parse_damage_source_controller_tail(input: &str) -> OracleResult<'_, DamageRedirectTarget> {
+    value(
+        DamageRedirectTarget::DamageSourceController,
+        alt((
+            tag::<_, _, OracleError<'_>>("its controller"),
+            tag("that source's controller"),
+            tag("that spell's controller"),
+        )),
+    )
+    .parse(input)
+}
+
+/// Parse a declared source target and retain both its durable slot binding and
+/// its live CR 609.7b qualifier. `ParentTargetSlot` is the common source-slot
+/// contract used by target construction and shield materialization.
+fn parse_declared_damage_source_target(input: &str) -> OracleResult<'_, TargetFilter> {
+    // Prove the target keyword with the shared prefix combinator without
+    // consuming it: `parse_target` owns the full target phrase, including
+    // combat-status and stack-spell qualifiers.
+    let (input, _) =
+        peek(crate::parser::oracle_nom::target::parse_declared_target_prefix).parse(input)?;
+    let (filter, rest) = parse_target(input);
+    if rest.trim().is_empty() || matches!(filter, TargetFilter::Any) {
+        return Err(oracle_err(rest));
+    }
+    Ok((
+        rest,
+        TargetFilter::And {
+            filters: vec![TargetFilter::ParentTargetSlot { index: 0 }, filter],
+        },
+    ))
+}
+
+/// CR 614.1a + CR 614.9 + CR 514.2: Effect-created, duration-bound source
+/// redirection: all damage that would be dealt this turn to a victim by a
+/// declared target source is dealt to that source's controller instead.
+///
+/// The grammar is fully anchored. Its two independent duration positions cover
+/// Mirror Strike's post-victim spelling and Reverberation's pre-victim spelling.
+fn parse_continuous_source_damage_redirect(norm_lower: &str) -> Option<Effect> {
+    let (rest, _) = tag::<_, _, OracleError<'_>>("all ")
+        .parse(norm_lower)
+        .ok()?;
+    let (rest, combat_scope) = parse_damage_noun_with_scope(rest).ok()?;
+    let (rest, _) = tag::<_, _, OracleError<'_>>(" that would be dealt ")
+        .parse(rest)
+        .ok()?;
+    let (rest, _) = opt(tag::<_, _, OracleError<'_>>("this turn "))
+        .parse(rest)
+        .ok()?;
+    let (rest, target_filter) = parse_damage_target_phrase(rest).ok()?;
+    let (rest, _) = opt(tag::<_, _, OracleError<'_>>(" this turn"))
+        .parse(rest)
+        .ok()?;
+    let (rest, _) = tag::<_, _, OracleError<'_>>(" by ").parse(rest).ok()?;
+    let (rest, source_text) = terminated(
+        take_until::<_, _, OracleError<'_>>(" is dealt to "),
+        peek(tag(" is dealt to ")),
+    )
+    .parse(rest)
+    .ok()?;
+    let (_, source_filter) = all_consuming(parse_declared_damage_source_target)
+        .parse(source_text)
+        .ok()?;
+    let (rest, _) = tag::<_, _, OracleError<'_>>(" is dealt to ")
+        .parse(rest)
+        .ok()?;
+    let (rest, redirect_to) = parse_damage_source_controller_tail(rest).ok()?;
+    let (rest, _) = tag::<_, _, OracleError<'_>>(" instead").parse(rest).ok()?;
+    let (rest, _) = opt(char::<_, OracleError<'_>>('.')).parse(rest).ok()?;
+    let (_, _) = eof::<_, OracleError<'_>>.parse(rest).ok()?;
+
+    Some(Effect::CreateDamageReplacement {
+        source_filter: Some(source_filter),
+        combat_scope,
+        target_filter: Some(target_filter),
+        modification: None,
+        redirect_to: Some(redirect_to),
+        redirect_amount: None,
+        redirect_object_filter: None,
+        recipient_object_filter: None,
+        redirect_lifetime: RedirectionLifetime::Continuous,
+    })
 }
 
 pub(crate) fn parse_choose_damage_source_candidate(input: &str) -> Option<TargetFilter> {
@@ -26745,6 +26843,79 @@ mod snapshot_tests {
             }
             other => panic!("expected PreventDamage, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn effect_created_source_controller_redirects_capture_declared_sources() {
+        assert!(all_consuming(parse_declared_damage_source_target)
+            .parse("target unblocked creature")
+            .is_ok());
+        assert!(all_consuming(parse_declared_damage_source_target)
+            .parse("target sorcery spell")
+            .is_ok());
+        let mirror = parse_oneshot_damage_replacement(
+            "all combat damage that would be dealt to you this turn by target unblocked creature is dealt to its controller instead.",
+            &ParseContext::default(),
+        )
+        .expect("Mirror Strike must parse");
+        let reverberation = parse_oneshot_damage_replacement(
+            "all damage that would be dealt this turn to you by target sorcery spell is dealt to that spell's controller instead.",
+            &ParseContext::default(),
+        )
+        .expect("Reverberation must parse");
+
+        for (effect, expected_scope) in [
+            (mirror, Some(CombatDamageScope::CombatOnly)),
+            (reverberation, None),
+        ] {
+            let Effect::CreateDamageReplacement {
+                source_filter,
+                combat_scope,
+                target_filter,
+                redirect_to,
+                redirect_lifetime,
+                ..
+            } = effect
+            else {
+                panic!("expected CreateDamageReplacement");
+            };
+            assert_eq!(combat_scope, expected_scope);
+            assert_eq!(target_filter, Some(damage_target_controller()));
+            assert_eq!(
+                redirect_to,
+                Some(DamageRedirectTarget::DamageSourceController)
+            );
+            assert_eq!(redirect_lifetime, RedirectionLifetime::Continuous);
+            assert!(matches!(
+                source_filter,
+                Some(TargetFilter::And { filters })
+                    if matches!(filters.first(), Some(TargetFilter::ParentTargetSlot { index: 0 }))
+            ));
+        }
+
+        let reflect = parse_oneshot_damage_replacement(
+            "the next time a source of your choice would deal damage this turn, that damage is dealt to that source's controller instead.",
+            &ParseContext::default(),
+        )
+        .expect("Reflect Damage must parse");
+        assert!(matches!(
+            reflect,
+            Effect::CreateDamageReplacement {
+                source_filter: Some(TargetFilter::ChosenDamageSource { .. }),
+                redirect_to: Some(DamageRedirectTarget::DamageSourceController),
+                redirect_lifetime: RedirectionLifetime::OneOpportunity,
+                ..
+            }
+        ));
+
+        assert!(
+            parse_oneshot_damage_replacement(
+                "the next time damage would be dealt to you this turn, that damage is dealt to its controller instead.",
+                &ParseContext::default(),
+            )
+            .is_none(),
+            "a source-controller tail without a captured source must decline"
+        );
     }
 
     /// Ria Ivor, Bane of Bladehold — the one-shot prevention lives in a
