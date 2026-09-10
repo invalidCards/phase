@@ -6594,6 +6594,8 @@ fn parse_normalized_oracle_ir(
             }
         }
 
+        // Priority 8a: Effect-created damage replacements on spells are routed
+        // by parser success, so declined lines continue to replacement handling.
         if let Some(effect) = oneshot_damage_replacement {
             emitter.ability_at(
                 item_line,
