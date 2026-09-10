@@ -319,9 +319,16 @@ pub fn resolve(
                 // the target its parent instruction already chose ("Choose target
                 // creature you control. …to the chosen creature instead"), which
                 // reaches this resolver through the propagated parent targets.
-                if let Some(id) =
-                    redirect_slot.and_then(|slot| chosen_redirect_object(ability, slot))
-                {
+                // A declared redirect recipient has its own role slot. The
+                // continuous "the chosen creature" grammar instead reuses an
+                // already propagated parent target and deliberately declares no
+                // new role; retain that target as the redirect recipient. The
+                // source-role offset keeps a future source-targeted version of
+                // that grammar from borrowing the source as its destination.
+                let chosen_redirect = redirect_slot
+                    .or_else(|| Some(source_slot_count))
+                    .and_then(|slot| chosen_redirect_object(ability, slot));
+                if let Some(id) = chosen_redirect {
                     shield = shield.redirect_target(TargetFilter::SpecificObject { id });
                 }
             }

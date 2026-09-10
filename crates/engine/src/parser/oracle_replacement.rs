@@ -7190,9 +7190,7 @@ pub(crate) fn parse_oneshot_damage_replacement(
         return Some(Effect::unimplemented("prevent", result_clause));
     }
 
-    if nom_primitives::scan_contains(result_clause, "prevent that damage")
-        || nom_primitives::scan_contains(result_clause, "prevent the damage")
-    {
+    if is_complete_oneshot_prevention_result(result_clause) {
         return Some(Effect::PreventDamage {
             amount: PreventionAmount::All,
             amount_dynamic: None,
@@ -7213,6 +7211,23 @@ pub(crate) fn parse_oneshot_damage_replacement(
     }
 
     None
+}
+
+/// CR 615.1a: The direct one-shot parser owns exactly one prevention
+/// instruction. A following sentence remains an ordinary effect-chain clause
+/// so its `damage prevented this way` relationship can be lowered as the
+/// prevention shield's continuation instead of being dropped by the direct
+/// spell route.
+fn is_complete_oneshot_prevention_result(input: &str) -> bool {
+    all_consuming(terminated(
+        alt((
+            tag::<_, _, OracleError<'_>>("prevent that damage"),
+            tag("prevent the damage"),
+        )),
+        opt(char('.')),
+    ))
+    .parse(input.trim())
+    .is_ok()
 }
 
 /// CR 615.1a + CR 614.1a + CR 115.1 + CR 609.7a + CR 609.7b: Parse the
@@ -7315,9 +7330,7 @@ fn parse_oneshot_target_source_prevent(norm_lower: &str, ctx: &ParseContext) -> 
     // "prevent the damage" result clause (the whole one-shot sentence, from
     // "would deal" onward).
     let (would_clause, result_clause) = split_would_deal_clause(body);
-    if !nom_primitives::scan_contains(result_clause, "prevent that damage")
-        && !nom_primitives::scan_contains(result_clause, "prevent the damage")
-    {
+    if !is_complete_oneshot_prevention_result(result_clause) {
         return None;
     }
 
