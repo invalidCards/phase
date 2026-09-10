@@ -4534,6 +4534,36 @@ fn target_filter_has_meaningful_content(filter: &TargetFilter) -> bool {
     }
 }
 
+/// Parse a declared damage-source target and bind it to the first target slot.
+///
+/// This is deliberately the sole authority for the source-target grammar used
+/// by damage replacements.  It proves the `target` keyword with the shared nom
+/// target-prefix combinator, delegates the noun phrase to `parse_target`, and
+/// then scopes a consumed `spell` phrase to the stack.  The returned remainder
+/// is sliced from `text`, not its lowercase working copy, so callers that parse
+/// a mixed-case Oracle fragment retain the original spelling.
+pub(crate) fn parse_declared_damage_source_target<'a>(
+    text: &'a str,
+) -> OracleResult<'a, TargetFilter> {
+    let lower = text.to_ascii_lowercase();
+    if nom_on_lower(text, &lower, nom_target::parse_declared_target_prefix).is_none() {
+        return Err(super::oracle_nom::error::oracle_err(text));
+    }
+    let (filter, rest) = parse_target(text);
+    let consumed = text.len() - rest.len();
+    let filter = scope_target_spell_phrase(filter, &lower[..consumed]);
+    if !target_filter_has_meaningful_content(&filter) {
+        return Err(super::oracle_nom::error::oracle_err(rest));
+    }
+
+    Ok((
+        rest,
+        TargetFilter::And {
+            filters: vec![TargetFilter::ParentTargetSlot { index: 0 }, filter],
+        },
+    ))
+}
+
 /// CR 608.2c: True when a typed filter carries a `FilterProp` PREDICATE beyond
 /// the bare head type noun (e.g. `Not(AttackedThisTurn)`, `Untapped`, a
 /// controller-scoping property). Used by the "each of those <noun> that

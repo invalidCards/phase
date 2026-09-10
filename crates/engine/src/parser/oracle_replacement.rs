@@ -32,7 +32,9 @@ use super::oracle_nom::primitives as nom_primitives;
 use super::oracle_nom::quantity as nom_quantity;
 use super::oracle_nom::target::parse_type_filter_word;
 use super::oracle_quantity::capitalize_first;
-use super::oracle_target::{parse_target, parse_type_phrase_folding};
+use super::oracle_target::{
+    parse_declared_damage_source_target, parse_target, parse_type_phrase_folding,
+};
 use super::oracle_util::{
     normalize_card_name_refs, parse_count_expr, parse_number, parse_ordinal, strip_after,
     strip_reminder_text, TextPair,
@@ -8081,27 +8083,6 @@ fn parse_damage_source_controller_tail(input: &str) -> OracleResult<'_, DamageRe
     .parse(input)
 }
 
-/// Parse a declared source target and retain both its durable slot binding and
-/// its live CR 609.7b qualifier. `ParentTargetSlot` is the common source-slot
-/// contract used by target construction and shield materialization.
-fn parse_declared_damage_source_target(input: &str) -> OracleResult<'_, TargetFilter> {
-    // Prove the target keyword with the shared prefix combinator without
-    // consuming it: `parse_target` owns the full target phrase, including
-    // combat-status and stack-spell qualifiers.
-    let (input, _) =
-        peek(crate::parser::oracle_nom::target::parse_declared_target_prefix).parse(input)?;
-    let (filter, rest) = parse_target(input);
-    if rest.trim().is_empty() || matches!(filter, TargetFilter::Any) {
-        return Err(oracle_err(rest));
-    }
-    Ok((
-        rest,
-        TargetFilter::And {
-            filters: vec![TargetFilter::ParentTargetSlot { index: 0 }, filter],
-        },
-    ))
-}
-
 /// CR 614.1a + CR 614.9 + CR 514.2: Effect-created, duration-bound source
 /// redirection: all damage that would be dealt this turn to a victim by a
 /// declared target source is dealt to that source's controller instead.
@@ -8119,11 +8100,20 @@ fn parse_continuous_source_damage_redirect(norm_lower: &str) -> Option<Effect> {
     let (rest, _) = opt(tag::<_, _, OracleError<'_>>("this turn "))
         .parse(rest)
         .ok()?;
-    let (rest, target_filter) = parse_damage_target_phrase(rest).ok()?;
+    // Reverberation has no original-recipient clause; Mirror Strike does. A
+    // missing clause is semantic data (`None` means every recipient), not an
+    // invitation to fabricate a "to you" filter.
+    let (rest, target_filter) = opt(parse_damage_target_phrase).parse(rest).ok()?;
     let (rest, _) = opt(tag::<_, _, OracleError<'_>>(" this turn"))
         .parse(rest)
         .ok()?;
-    let (rest, _) = tag::<_, _, OracleError<'_>>(" by ").parse(rest).ok()?;
+    // A recipient clause leaves its separating leading space in place ("to you
+    // this turn by ..."), whereas Reverberation's omitted-recipient form has
+    // already consumed the space with "this turn " ("...dealt this turn by").
+    // These are one grammar axis, not two card-specific arms.
+    let (rest, _) = alt((tag::<_, _, OracleError<'_>>(" by "), tag("by ")))
+        .parse(rest)
+        .ok()?;
     let (rest, source_text) = terminated(
         take_until::<_, _, OracleError<'_>>(" is dealt to "),
         peek(tag(" is dealt to ")),
@@ -8144,7 +8134,7 @@ fn parse_continuous_source_damage_redirect(norm_lower: &str) -> Option<Effect> {
     Some(Effect::CreateDamageReplacement {
         source_filter: Some(source_filter),
         combat_scope,
-        target_filter: Some(target_filter),
+        target_filter,
         modification: None,
         redirect_to: Some(redirect_to),
         redirect_amount: None,

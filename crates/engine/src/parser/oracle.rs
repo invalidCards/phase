@@ -6562,6 +6562,11 @@ fn parse_normalized_oracle_ir(
             && scan_contains(&lower, "prevent")
             && scan_contains(&lower, "damage")
             && !is_instead_replacement_line(&prevention_effect_text)
+            // Priority 8a owns duration-bound source redirection even though
+            // its English contains "prevent" only in an unrelated rider or
+            // classifier path. Let its success-only parser route Mirror Strike
+            // and Reverberation before the broad prevention-chain fallback.
+            && parse_oneshot_damage_replacement(&lower, &ctx).is_none()
         {
             ctx.subject = None;
             ctx.actor = None;

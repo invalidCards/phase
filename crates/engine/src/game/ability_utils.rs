@@ -2514,6 +2514,22 @@ pub fn validate_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -
             kept.extend(explicit);
             kept
         }
+    } else if let Some(roles) = damage_replacement_target_roles(&validated.effect) {
+        // CR 115.1a + CR 601.2c + CR 608.2b: each declared damage-replacement
+        // role is independently targeted and revalidated in its declared order.
+        // In particular, a stack spell source must not be checked against the
+        // recipient or redirect-destination filter just because it occupies
+        // `targets[0]`.
+        let mut kept = Vec::new();
+        for (target, role) in validated.targets.iter().zip(roles) {
+            kept.extend(validate_pinned_targets(
+                state,
+                std::slice::from_ref(target),
+                role.filter(),
+                &validated,
+            ));
+        }
+        kept
     } else if let Some(src_leaf) = damage_replacement_source_slot_filter(&validated.effect).cloned()
     {
         // CR 608.2b + CR 609.7a: A source-scoped `PreventDamage` carries its
@@ -2704,6 +2720,55 @@ fn damage_replacement_source_slot_filter(effect: &Effect) -> Option<&TargetFilte
         return None;
     };
     Some(source_leaf)
+}
+
+/// The announced target roles of a damage-redirection replacement, in Oracle
+/// declaration order. Keeping these together prevents the cast, modal,
+/// validation, retarget, and resolver paths from independently re-deriving a
+/// different index convention.
+#[derive(Clone, Copy)]
+pub(crate) enum DamageReplacementTargetRole<'a> {
+    DeclaredSource(&'a TargetFilter),
+    OriginalRecipient(&'a TargetFilter),
+    RedirectRecipient(&'a TargetFilter),
+}
+
+impl<'a> DamageReplacementTargetRole<'a> {
+    pub(crate) fn filter(self) -> &'a TargetFilter {
+        match self {
+            Self::DeclaredSource(filter)
+            | Self::OriginalRecipient(filter)
+            | Self::RedirectRecipient(filter) => filter,
+        }
+    }
+}
+
+pub(crate) fn damage_replacement_target_roles(
+    effect: &Effect,
+) -> Option<Vec<DamageReplacementTargetRole<'_>>> {
+    let Effect::CreateDamageReplacement {
+        recipient_object_filter,
+        redirect_object_filter,
+        ..
+    } = effect
+    else {
+        return None;
+    };
+
+    let mut roles = Vec::with_capacity(3);
+    if let Some(filter) = damage_replacement_source_slot_filter(effect) {
+        roles.push(DamageReplacementTargetRole::DeclaredSource(filter));
+    }
+    if let Some(filter) = recipient_object_filter
+        .as_ref()
+        .filter(|filter| !filter.is_context_ref())
+    {
+        roles.push(DamageReplacementTargetRole::OriginalRecipient(filter));
+    }
+    if let Some(filter) = redirect_object_filter {
+        roles.push(DamageReplacementTargetRole::RedirectRecipient(filter));
+    }
+    Some(roles)
 }
 
 /// CR 120.3a + CR 603.7c: Constrain a companion `ControllerRef::TargetPlayer`
@@ -3005,7 +3070,22 @@ fn collect_target_slots_inner(
     // do NOT `return`: the generic recipient logic still runs, but for the
     // source-scoped form `target == Any` so it adds nothing.
     if ability.target_choice_timing == TargetChoiceTiming::Stack {
-        if let Some(src_leaf) = damage_replacement_source_slot_filter(&ability.effect) {
+        if let Some(roles) = damage_replacement_target_roles(&ability.effect) {
+            for role in roles {
+                let legal_targets =
+                    legal_targets_for_ability_filter(state, ability, role.filter(), &acc.slots);
+                if legal_targets.is_empty() && !ability.optional_targeting {
+                    return Err(no_legal_target_slots());
+                }
+                acc.push(TargetSelectionSlot {
+                    legal_targets,
+                    optional: ability.optional_targeting,
+                    chooser: None,
+                    effect_kind: acc.current_effect_kind,
+                    effect_detail: acc.current_effect_detail,
+                });
+            }
+        } else if let Some(src_leaf) = damage_replacement_source_slot_filter(&ability.effect) {
             let legal_targets =
                 legal_targets_for_ability_filter(state, ability, src_leaf, &acc.slots);
             if legal_targets.is_empty() && !ability.optional_targeting {
@@ -3197,71 +3277,9 @@ fn collect_target_slots_inner(
                 });
             }
         }
-    } else if let Effect::CreateDamageReplacement {
-        recipient_object_filter,
-        redirect_object_filter,
-        ..
-    } = &ability.effect
-    {
-        // CR 115.1 + CR 614.9: Surface up to two object target slots for the
-        // one-shot damage replacement — `target_filter()` returns None for this
-        // effect, so the generic path below never reaches it.
-        //
-        // ORDER IS LOAD-BEARING: the *original-recipient* slot ("would deal
-        // damage to target creature" — Jade Monolith) is declared FIRST, then
-        // the *redirect-destination* slot ("...to target creature instead" —
-        // Soltari Guerrillas). The resolver reads `recipient_host` from
-        // `chosen_target_object(ability, 0)` and the redirect from
-        // `chosen_redirect_object` (which skips the recipient slot when present),
-        // so the surfacing order here must match that indexing exactly. The two
-        // positions are unrolled (not looped) because they use DIFFERENT skip
-        // predicates — see each arm below.
-        if let Some(filter) = recipient_object_filter {
-            // CR 614.9 + CR 608.2k: a context-ref original-recipient (`SelfRef` —
-            // "...dealt to ~", the en-Kor cycle — and any future event anaphor in
-            // this position) is not a chosen target, so it surfaces no target
-            // slot. The resolver hosts the shield on the source directly (or, for
-            // a non-SelfRef context ref, on whatever `targeting::resolved_targets`
-            // binds).
-            if !filter.is_context_ref() {
-                let legal_targets =
-                    legal_targets_for_ability_filter(state, ability, filter, &acc.slots);
-                if legal_targets.is_empty() && !ability.optional_targeting {
-                    return Err(no_legal_target_slots());
-                }
-                acc.push(TargetSelectionSlot {
-                    legal_targets,
-                    optional: ability.optional_targeting,
-                    chooser: None,
-                    effect_kind: acc.current_effect_kind,
-                    effect_detail: acc.current_effect_detail,
-                });
-            }
-        }
-        if let Some(filter) = redirect_object_filter {
-            // CR 614.9: the redirect-destination slot is declared UNCONDITIONALLY
-            // — it is never a context ref in the corpus. `redirect_object_filter`
-            // is `Some` exactly when `redirect_to ==
-            // DamageRedirectTarget::ChosenObjectTarget`, the variant that *means*
-            // "an object chosen as a target of the creating ability"; every other
-            // destination (`Controller`, `SourceObject`, `AttachedToSource`) has
-            // its own variant and carries no filter here. A context ref in this
-            // position would drop the slot `chosen_redirect_object` indexes, so
-            // this position does NOT share the recipient's `is_context_ref()`
-            // check.
-            let legal_targets =
-                legal_targets_for_ability_filter(state, ability, filter, &acc.slots);
-            if legal_targets.is_empty() && !ability.optional_targeting {
-                return Err(no_legal_target_slots());
-            }
-            acc.push(TargetSelectionSlot {
-                legal_targets,
-                optional: ability.optional_targeting,
-                chooser: None,
-                effect_kind: acc.current_effect_kind,
-                effect_detail: acc.current_effect_detail,
-            });
-        }
+    } else if damage_replacement_target_roles(&ability.effect).is_some() {
+        // The three damage-replacement roles were already surfaced above by
+        // `damage_replacement_target_roles`, before this generic cascade.
     } else if let Effect::EachDealsDamageEqualToPower {
         sources,
         recipient,
@@ -5542,7 +5560,17 @@ fn collect_target_slot_specs(
     // `collect_target_slots` one-for-one so per-slot specs line up with the
     // surfaced TargetSelectionSlots (the choosable source spell, declared first).
     if ability.target_choice_timing == TargetChoiceTiming::Stack {
-        if let Some(src_leaf) = damage_replacement_source_slot_filter(&ability.effect) {
+        if let Some(roles) = damage_replacement_target_roles(&ability.effect) {
+            for role in roles {
+                let id = TargetInstanceId(*next_instance);
+                *next_instance += 1;
+                specs.push(TargetSlotSpec {
+                    filter: role.filter().clone(),
+                    optional: ability.optional_targeting,
+                    instance: id,
+                });
+            }
+        } else if let Some(src_leaf) = damage_replacement_source_slot_filter(&ability.effect) {
             let id = TargetInstanceId(*next_instance);
             *next_instance += 1;
             specs.push(TargetSlotSpec {
@@ -5650,44 +5678,8 @@ fn collect_target_slot_specs(
                 });
             }
         }
-    } else if let Effect::CreateDamageReplacement {
-        recipient_object_filter,
-        redirect_object_filter,
-        ..
-    } = &ability.effect
-    {
-        // CR 115.1 + CR 614.9: Mirror `collect_target_slots` one-for-one — the
-        // recipient slot (Jade Monolith) before the redirect slot (Soltari) — so
-        // per-slot specs line up with the surfaced TargetSelectionSlots. Unrolled
-        // exactly as the `collect_target_slots_inner` mirror: the two positions
-        // use DIFFERENT skip predicates, so a single shared loop would apply the
-        // recipient's context-ref skip to the redirect position too.
-        if let Some(filter) = recipient_object_filter {
-            // CR 614.9 + CR 608.2k: mirror `collect_target_slots_inner` — a
-            // context-ref recipient (`SelfRef`, en-Kor) surfaces no slot, so it
-            // gets no spec either.
-            if !filter.is_context_ref() {
-                let id = TargetInstanceId(*next_instance);
-                *next_instance += 1;
-                specs.push(TargetSlotSpec {
-                    filter: filter.clone(),
-                    optional: ability.optional_targeting,
-                    instance: id,
-                });
-            }
-        }
-        if let Some(filter) = redirect_object_filter {
-            // CR 614.9: the redirect position is declared unconditionally — see
-            // `collect_target_slots_inner`'s mirror for why it does not share the
-            // recipient's `is_context_ref()` check.
-            let id = TargetInstanceId(*next_instance);
-            *next_instance += 1;
-            specs.push(TargetSlotSpec {
-                filter: filter.clone(),
-                optional: ability.optional_targeting,
-                instance: id,
-            });
-        }
+    } else if damage_replacement_target_roles(&ability.effect).is_some() {
+        // The role authority emitted all matching specs before this cascade.
     } else if let Effect::EachDealsDamageEqualToPower {
         sources,
         recipient,
@@ -7888,6 +7880,36 @@ fn assign_targets_recursive(
     // node's `targets` (the PreventDamage HEAD node) BEFORE descending into the
     // sub-chain, so the modal sub (mode 3's PutCounter) consumes its own target
     // next. Slot order matches `collect_target_slots`: source slot first.
+    if ability.target_choice_timing == TargetChoiceTiming::Stack {
+        if let Some(roles) = damage_replacement_target_roles(&ability.effect) {
+            for _role in roles {
+                if let Some(target) = targets.get(*next_target) {
+                    ability.targets.push(target.clone());
+                    *next_target += 1;
+                } else if !ability.optional_targeting {
+                    return Err(EngineError::InvalidAction(
+                        "Missing required target".to_string(),
+                    ));
+                }
+            }
+            if defers_sub_ability_target_selection(&ability.effect) {
+                assign_targets_after_deferred_effect(
+                    state,
+                    ability.sub_ability.as_deref_mut(),
+                    targets,
+                    next_target,
+                )?;
+                return Ok(());
+            }
+            if let Some(sub_ability) = ability.sub_ability.as_mut() {
+                if defers_conditional_target_selection(sub_ability) {
+                    return Ok(());
+                }
+                assign_targets_recursive(state, sub_ability, targets, next_target)?;
+            }
+            return Ok(());
+        }
+    }
     if ability.target_choice_timing == TargetChoiceTiming::Stack
         && damage_replacement_source_slot_filter(&ability.effect).is_some()
     {
@@ -8286,10 +8308,37 @@ fn assign_selected_slots_recursive(
         return Ok(());
     }
 
-    // CR 609.7 + CR 601.2c: Mirror the source-scoped `PreventDamage` slot — the
-    // modal cast pipeline drives the slots path, so the chosen source spell must
-    // be consumed into THIS node's `targets` here too, BEFORE descending into the
-    // (modal) sub-chain. Slot order matches `collect_target_slots`: source first.
+    // CR 609.7 + CR 601.2c: The modal path consumes the same structured roles
+    // as normal target assignment, before it descends into the chain.
+    if ability.target_choice_timing == TargetChoiceTiming::Stack {
+        if let Some(roles) = damage_replacement_target_roles(&ability.effect) {
+            for _role in roles {
+                let Some(selected_slot) = selected_slots.get(*next_slot) else {
+                    return Err(EngineError::InvalidAction(
+                        "Missing target selection".to_string(),
+                    ));
+                };
+                match selected_slot {
+                    Some(target) => ability.targets.push(target.clone()),
+                    None if ability.optional_targeting => {}
+                    None => {
+                        return Err(EngineError::InvalidAction(
+                            "Missing required target".to_string(),
+                        ));
+                    }
+                }
+                *next_slot += 1;
+            }
+            if let Some(sub_ability) = ability.sub_ability.as_mut() {
+                if defers_conditional_target_selection(sub_ability) {
+                    return Ok(());
+                }
+                assign_selected_slots_recursive(state, sub_ability, selected_slots, next_slot)?;
+            }
+            return Ok(());
+        }
+    }
+    // Source-scoped `PreventDamage` remains a one-role sibling.
     if ability.target_choice_timing == TargetChoiceTiming::Stack
         && damage_replacement_source_slot_filter(&ability.effect).is_some()
     {
@@ -8814,6 +8863,12 @@ fn chain_has_target_sink(ability: &ResolvedAbility) -> bool {
         return true;
     }
 
+    if ability.target_choice_timing == TargetChoiceTiming::Stack
+        && damage_replacement_target_roles(&ability.effect).is_some()
+    {
+        return true;
+    }
+
     // CR 609.7 + CR 601.2c: A source-scoped `PreventDamage` head node consumes
     // the chosen source spell into its own `targets[0]` — `collect_target_slots`
     // pushes a source slot for it, and `assign_targets_recursive` consumes one
@@ -8981,7 +9036,9 @@ fn node_slot_filters(ability: &ResolvedAbility) -> NodeSlotFilters {
     // Arm 1 — `PreventDamage` source slot (declared FIRST, not returned early,
     // exactly mirroring `collect_target_slot_specs`).
     if stack_timing {
-        if let Some(src) = damage_replacement_source_slot_filter(&ability.effect) {
+        if let Some(roles) = damage_replacement_target_roles(&ability.effect) {
+            lead.extend(roles.into_iter().map(|role| role.filter().clone()));
+        } else if let Some(src) = damage_replacement_source_slot_filter(&ability.effect) {
             lead.push(src.clone());
         }
     }
@@ -9013,9 +9070,7 @@ fn node_slot_filters(ability: &ResolvedAbility) -> NodeSlotFilters {
         return NodeSlotFilters::PerSlot(lead);
     } else if matches!(
         ability.effect,
-        Effect::Attach { .. }
-            | Effect::CreateDamageReplacement { .. }
-            | Effect::EachDealsDamageEqualToPower { .. }
+        Effect::Attach { .. } | Effect::EachDealsDamageEqualToPower { .. }
     ) {
         return NodeSlotFilters::NotDerivable;
     }
@@ -9602,6 +9657,13 @@ fn minimum_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -> usi
     } else {
         paired_subject_slot_filters(&ability.effect).count()
     };
+    let damage_replacement_targets = if ability.target_choice_timing == TargetChoiceTiming::Stack
+        && !ability.optional_targeting
+    {
+        damage_replacement_target_roles(&ability.effect).map_or(0, |roles| roles.len())
+    } else {
+        0
+    };
 
     // CR 601.2c: A multi-role mana surfaces a DIFFERENT number of slots than the
     // generic `extract_target_filter_from_effect` term below reserves. Add only
@@ -9732,6 +9794,7 @@ fn minimum_targets_in_chain(state: &GameState, ability: &ResolvedAbility) -> usi
     let current = attach_targets
         + move_counter_targets
         + paired_subject_targets
+        + damage_replacement_targets
         + mana_extra_roles
         + player_companion
         + target_creature_quantity_companion

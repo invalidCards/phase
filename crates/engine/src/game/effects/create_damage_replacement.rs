@@ -1,3 +1,4 @@
+use crate::game::ability_utils::{damage_replacement_target_roles, DamageReplacementTargetRole};
 use crate::game::effects::choose_damage_source;
 use crate::game::effects::prevent_damage::resolve_source_filter;
 use crate::game::game_object::AttachTarget;
@@ -213,21 +214,18 @@ pub fn resolve(
     let recipient_context_ref = recipient_object_filter
         .as_ref()
         .filter(|f| f.is_context_ref());
-    // CDR roles are declared in this order: source, original recipient,
-    // redirect destination. A `ParentTargetSlot { 0 }` source captures the
-    // first role, so later object roles must account for it.
-    let source_slot_count = source_filter.as_ref().is_some_and(|filter| {
-        matches!(
-            filter,
-            TargetFilter::And { filters }
-                if matches!(
-                    filters.as_slice(),
-                    [TargetFilter::ParentTargetSlot { index: 0 }, _]
-                )
-        )
-    }) as usize;
-    let recipient_consumes_slot =
-        recipient_object_filter.is_some() && recipient_context_ref.is_none();
+    // One shared declaration-order authority serves targeting and resolution.
+    // The source's slot is distinct from the replacement host, so a stack spell
+    // can leave the stack after resolution while its `SpecificObject` damage
+    // filter remains installed in the shield.
+    let roles = damage_replacement_target_roles(&ability.effect).unwrap_or_default();
+    let source_slot_count = usize::from(matches!(
+        roles.first(),
+        Some(DamageReplacementTargetRole::DeclaredSource(_))
+    ));
+    let redirect_slot = roles
+        .iter()
+        .position(|role| matches!(role, DamageReplacementTargetRole::RedirectRecipient(_)));
     let recipient_host = match (recipient_context_ref, recipient_object_filter.is_some()) {
         (Some(filter), _) => targeting::resolved_targets(ability, filter, state)
             .into_iter()
@@ -302,8 +300,9 @@ pub fn resolve(
                 // the target its parent instruction already chose ("Choose target
                 // creature you control. …to the chosen creature instead"), which
                 // reaches this resolver through the propagated parent targets.
-                let redirect_slot = source_slot_count + usize::from(recipient_consumes_slot);
-                if let Some(id) = chosen_redirect_object(ability, redirect_slot) {
+                if let Some(id) =
+                    redirect_slot.and_then(|slot| chosen_redirect_object(ability, slot))
+                {
                     shield = shield.redirect_target(TargetFilter::SpecificObject { id });
                 }
             }
