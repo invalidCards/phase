@@ -51,13 +51,13 @@ fn karona_false_god_upkeep_scoped_subject_gives_control() {
         .sub_ability
         .as_deref()
         .expect("immediate gains-control continuation");
-    assert!(matches!(
+    assert_eq!(
         control.effect.as_ref(),
-        Effect::GiveControl {
+        &Effect::GiveControl {
             target: TargetFilter::SelfRef,
             recipient: TargetFilter::ScopedPlayer,
         }
-    ));
+    );
     assert_no_unimplemented(untap);
 }
 
@@ -86,7 +86,7 @@ fn controller_upkeep_subject_does_not_become_scoped_player_recipient() {
     assert!(matches!(
         control.effect.as_ref(),
         Effect::GainControl {
-            target: TargetFilter::SelfRef,
+            target: TargetFilter::ParentTarget,
         }
     ));
     assert_no_unimplemented(untap);

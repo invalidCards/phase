@@ -37031,6 +37031,17 @@ pub(crate) fn parse_effect_chain_ir(
                 && !sequence::starts_clause_text(&text)
                 && sequence::starts_clause_text_or_conjugated(&text)
         });
+        // CR 608.2c: when a scoped phase player continues an immediately
+        // preceding self-targeted instruction, its bare object pronoun refers to
+        // that source rather than to an absent parent target.
+        if inherits_carried_scoped_player_subject.is_some()
+            && builder
+                .clauses()
+                .last()
+                .is_some_and(|previous| effect_targets_self_ref(&deepest_clause_effect(previous)))
+        {
+            ctx.object_pronoun_ref = Some(TargetFilter::SelfRef);
+        }
 
         // CR 603.7a: Check for temporal prefix before suffix. When present, parse the
         // inner effect through the full pipeline and wrap in CreateDelayedTrigger.
