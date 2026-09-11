@@ -2375,7 +2375,7 @@ fn starts_clause_text_lower(s: &str) -> bool {
         value((), tag("fight ")),
         value((), tag("flip ")),
         value((), tag("investigate")),
-        value((), tag("gain control ")),
+        value((), alt((tag("gain control "), tag("gains control ")))),
     ))
     .or(alt((
         // CR 701.46a: "adapt N" is an imperative keyword action, so it can start
@@ -9933,6 +9933,11 @@ mod tests {
         assert!(starts_bare_and_clause(
             "attach an Equipment that was attached to ~ to that creature"
         ));
+    }
+
+    #[test]
+    fn bare_and_clause_starts_on_conjugated_gain_control() {
+        assert!(starts_bare_and_clause("gains control of it"));
     }
 
     #[test]
