@@ -1533,13 +1533,23 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
 /// splitter cannot admit this conjugated form: outside that context, a clause
 /// such as Coveted Jewel's "that player draws three cards and gains control of
 /// this artifact" must remain a single instruction.
+fn starts_scoped_player_subject(lower: &str) -> bool {
+    alt((
+        tag::<_, _, OracleError<'_>>("that player "),
+        tag("the player "),
+        tag("that opponent "),
+    ))
+    .parse(lower)
+    .is_ok()
+}
+
 pub(super) fn split_subject_elided_control_continuations(
     chunks: Vec<ClauseChunk>,
 ) -> Vec<ClauseChunk> {
     let mut split = Vec::with_capacity(chunks.len());
     for chunk in chunks {
         let lower = chunk.text.to_ascii_lowercase();
-        if !super::subject::starts_with_subject_prefix(&lower) {
+        if !starts_scoped_player_subject(&lower) {
             split.push(chunk);
             continue;
         }
@@ -10004,6 +10014,19 @@ mod tests {
         assert_eq!(chunks[0].boundary_after, Some(ClauseBoundary::Comma));
         assert_eq!(chunks[1].text, "gains control of it");
         assert_eq!(chunks[1].boundary_after, Some(ClauseBoundary::Sentence));
+    }
+
+    #[test]
+    fn non_anaphoric_player_subject_does_not_split_control_continuation() {
+        let chunks = split_subject_elided_control_continuations(split_clause_sequence(
+            "each player draws a card and gains control of it.",
+        ));
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(
+            chunks[0].text,
+            "each player draws a card and gains control of it"
+        );
+        assert_eq!(chunks[0].boundary_after, Some(ClauseBoundary::Sentence));
     }
 
     #[test]
