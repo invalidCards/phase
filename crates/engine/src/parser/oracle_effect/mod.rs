@@ -34656,6 +34656,15 @@ pub(crate) fn parse_effect_chain_ir(
         lower::strip_each_copy_targets_distinct_member_suffix(text);
     let text = text.as_str();
     let chunks = split_clause_sequence(text);
+    let chunks = if ctx.in_trigger
+        && matches!(
+            ctx.relative_player_scope.as_ref(),
+            Some(ControllerRef::ScopedPlayer)
+        ) {
+        sequence::split_subject_elided_control_continuations(chunks)
+    } else {
+        chunks
+    };
     // CR 611.2a + CR 608.2c: expand any chunk whose leading duration governs conjuncts the
     // single-clause parse discarded. The expanded conjuncts become ORDINARY chunks of THIS
     // chain, which is the only construction under which chain-level anaphor state

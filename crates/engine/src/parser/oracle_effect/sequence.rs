@@ -2,7 +2,7 @@ use crate::parser::oracle_nom::error::{OracleError, OracleResult};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_till, take_until};
 use nom::character::complete::multispace1;
-use nom::combinator::{all_consuming, eof, map, map_opt, opt, rest, value};
+use nom::combinator::{all_consuming, eof, map, map_opt, opt, peek, rest, value};
 use nom::sequence::{preceded, terminated};
 use nom::Parser;
 
@@ -1528,6 +1528,50 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
     chunks
 }
 
+/// CR 608.2c: split a subject-elided control continuation only after the
+/// trigger parser has established a scoped phase-player provenance. The generic
+/// splitter cannot admit this conjugated form: outside that context, a clause
+/// such as Coveted Jewel's "that player draws three cards and gains control of
+/// this artifact" must remain a single instruction.
+pub(super) fn split_subject_elided_control_continuations(
+    chunks: Vec<ClauseChunk>,
+) -> Vec<ClauseChunk> {
+    let mut split = Vec::with_capacity(chunks.len());
+    for chunk in chunks {
+        let lower = chunk.text.to_ascii_lowercase();
+        if !super::subject::starts_with_subject_prefix(&lower) {
+            split.push(chunk);
+            continue;
+        }
+        let Some((head_lower, tail)) = nom_on_lower(&chunk.text, &lower, |input| {
+            let (input, head) =
+                take_until::<_, _, OracleError<'_>>(" and gains control of ").parse(input)?;
+            let (input, _) = tag::<_, _, OracleError<'_>>(" and ").parse(input)?;
+            let (_, _) = peek(tag::<_, _, OracleError<'_>>("gains control of ")).parse(input)?;
+            Ok((input, head))
+        }) else {
+            split.push(chunk);
+            continue;
+        };
+        let head = &chunk.text[..head_lower.len()];
+        if head.trim().is_empty() || tail.trim().is_empty() {
+            split.push(chunk);
+            continue;
+        }
+        split.push(ClauseChunk {
+            text: head.trim().to_string(),
+            boundary_after: Some(ClauseBoundary::Comma),
+            leading_duration: chunk.leading_duration.clone(),
+        });
+        split.push(ClauseChunk {
+            text: tail.trim().to_string(),
+            boundary_after: chunk.boundary_after,
+            leading_duration: chunk.leading_duration,
+        });
+    }
+    split
+}
+
 /// CR 114.1: True when the clause-so-far begins with the emblem-creation head
 /// (`you get an emblem with "…"` or the subject-stripped `get an emblem with
 /// "…"`). Combinator-only dispatch mirroring `try_parse_emblem_creation`'s prefix
@@ -2792,7 +2836,7 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
         value((), tag("draw ")),
         value((), tag("discard ")),
         value((), tag("exile ")),
-        value((), alt((tag("gain control "), tag("gains control ")))),
+        value((), tag("gain control ")),
         value((), tag("have ")),
         value((), tag("manifest ")),
         value((), tag("mill ")),
@@ -9936,8 +9980,15 @@ mod tests {
     }
 
     #[test]
-    fn bare_and_clause_starts_on_conjugated_gain_control() {
-        assert!(starts_bare_and_clause("gains control of it"));
+    fn scoped_subject_elided_control_continuation_splits() {
+        let chunks = split_subject_elided_control_continuations(split_clause_sequence(
+            "that player untaps Karona and gains control of it.",
+        ));
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0].text, "that player untaps Karona");
+        assert_eq!(chunks[0].boundary_after, Some(ClauseBoundary::Comma));
+        assert_eq!(chunks[1].text, "gains control of it");
+        assert_eq!(chunks[1].boundary_after, None);
     }
 
     #[test]
