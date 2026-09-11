@@ -10003,7 +10003,7 @@ mod tests {
         assert_eq!(chunks[0].text, "that player untaps Karona");
         assert_eq!(chunks[0].boundary_after, Some(ClauseBoundary::Comma));
         assert_eq!(chunks[1].text, "gains control of it");
-        assert_eq!(chunks[1].boundary_after, None);
+        assert_eq!(chunks[1].boundary_after, Some(ClauseBoundary::Sentence));
     }
 
     #[test]
