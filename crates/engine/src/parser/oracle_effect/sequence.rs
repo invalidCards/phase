@@ -2,7 +2,7 @@ use crate::parser::oracle_nom::error::{OracleError, OracleResult};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_till, take_until};
 use nom::character::complete::multispace1;
-use nom::combinator::{all_consuming, eof, map, map_opt, opt, peek, rest, value};
+use nom::combinator::{all_consuming, eof, map, map_opt, opt, rest, value};
 use nom::sequence::{preceded, terminated};
 use nom::Parser;
 
@@ -1543,17 +1543,32 @@ pub(super) fn split_subject_elided_control_continuations(
             split.push(chunk);
             continue;
         }
-        let Some((head_lower, tail)) = nom_on_lower(&chunk.text, &lower, |input| {
-            let (input, head) =
-                take_until::<_, _, OracleError<'_>>(" and gains control of ").parse(input)?;
-            let (input, _) = tag::<_, _, OracleError<'_>>(" and ").parse(input)?;
-            let (_, _) = peek(tag::<_, _, OracleError<'_>>("gains control of ")).parse(input)?;
-            Ok((input, head))
+        let Some(((), tail)) = nom_on_lower(&chunk.text, &lower, |input| {
+            value(
+                (),
+                terminated(
+                    take_until::<_, _, OracleError<'_>>(" and gains control of "),
+                    tag(" and "),
+                ),
+            )
+            .parse(input)
         }) else {
             split.push(chunk);
             continue;
         };
-        let head = &chunk.text[..head_lower.len()];
+        let Some(head_end) = chunk
+            .text
+            .len()
+            .checked_sub(tail.len())
+            .and_then(|end| end.checked_sub(" and ".len()))
+        else {
+            split.push(chunk);
+            continue;
+        };
+        let Some(head) = chunk.text.get(..head_end) else {
+            split.push(chunk);
+            continue;
+        };
         if head.trim().is_empty() || tail.trim().is_empty() {
             split.push(chunk);
             continue;
