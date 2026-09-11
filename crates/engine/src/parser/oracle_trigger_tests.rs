@@ -68,7 +68,7 @@ fn karona_false_god_upkeep_scoped_subject_gives_control() {
 fn controller_upkeep_subject_does_not_become_scoped_player_recipient() {
     let trigger = parse_trigger_line(
         "At the beginning of your upkeep, you untap Karona and gain control of it.",
-        "Synthetic",
+        "Karona, False God",
     );
     let untap = trigger.execute.as_deref().expect("upkeep effect");
     assert!(matches!(
@@ -83,16 +83,13 @@ fn controller_upkeep_subject_does_not_become_scoped_player_recipient() {
         .sub_ability
         .as_deref()
         .expect("control continuation must be reached");
-    assert!(
-        !matches!(
-            control.effect.as_ref(),
-            Effect::GiveControl {
-                recipient: TargetFilter::ScopedPlayer,
-                ..
-            }
-        ),
-        "controller-scoped upkeep text must not inherit the scoped-player carry"
-    );
+    assert!(matches!(
+        control.effect.as_ref(),
+        Effect::GainControl {
+            target: TargetFilter::SelfRef,
+        }
+    ));
+    assert_no_unimplemented(untap);
 }
 
 /// CR 603.4 + CR 601.2f: Liberator's intervening "if" survives the whole
