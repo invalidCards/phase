@@ -2375,7 +2375,7 @@ fn starts_clause_text_lower(s: &str) -> bool {
         value((), tag("fight ")),
         value((), tag("flip ")),
         value((), tag("investigate")),
-        value((), alt((tag("gain control "), tag("gains control ")))),
+        value((), tag("gain control ")),
     ))
     .or(alt((
         // CR 701.46a: "adapt N" is an imperative keyword action, so it can start
@@ -2792,7 +2792,7 @@ fn starts_bare_and_clause_lower(s: &str) -> bool {
         value((), tag("draw ")),
         value((), tag("discard ")),
         value((), tag("exile ")),
-        value((), tag("gain control ")),
+        value((), alt((tag("gain control "), tag("gains control ")))),
         value((), tag("have ")),
         value((), tag("manifest ")),
         value((), tag("mill ")),
