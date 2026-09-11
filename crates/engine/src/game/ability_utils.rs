@@ -2793,6 +2793,9 @@ pub(crate) fn damage_replacement_target_roles(
     if let Some(filter) = redirect_object_filter {
         roles.push(DamageReplacementTargetRole::RedirectRecipient(filter));
     }
+    // CR 608.2b: A role-less replacement has no declared target slots, so it
+    // must fall through to generic target validation rather than report an
+    // empty role set as a separate targeting case.
     (!roles.is_empty()).then_some(roles)
 }
 

@@ -6,13 +6,15 @@ use engine::game::scenario::{GameScenario, P0, P1};
 use engine::parser::oracle::parse_oracle_text;
 use engine::types::ability::{
     AbilityKind, CombatDamageScope, DamageRedirectTarget, Effect, QuantityExpr,
-    RedirectionLifetime, ResolvedAbility, TargetFilter, TargetRef, TypeFilter, TypedFilter,
+    RedirectionLifetime, ResolvedAbility, ShieldKind, TargetFilter, TargetRef, TypeFilter,
+    TypedFilter,
 };
 use engine::types::actions::GameAction;
 use engine::types::events::GameEvent;
 use engine::types::game_state::WaitingFor;
 use engine::types::identifiers::ObjectId;
 use engine::types::keywords::Keyword;
+use engine::types::mana::{ManaType, ManaUnit};
 use engine::types::phase::Phase;
 use engine::types::player::PlayerId;
 use engine::types::zones::Zone;
@@ -23,7 +25,11 @@ const REVERBERATION: &str =
     "All damage that would be dealt this turn by target sorcery spell is dealt to that spell's controller instead.";
 const REFLECT_DAMAGE: &str =
     "The next time a source of your choice would deal damage this turn, that damage is dealt to that source's controller instead.";
-const LAVA_AXE: &str = "Lava Axe deals 5 damage to target player.";
+const AEGIS_OF_HONOR: &str =
+    "{1}: The next time an instant or sorcery spell would deal damage to you this turn, that spell deals that damage to its controller instead.";
+const CAROM: &str = "The next 1 damage that would be dealt to target creature this turn is dealt to another target creature instead.\nDraw a card.";
+const INVULNERABILITY: &str = "Buyback {3} (You may pay an additional {3} as you cast this spell. If you do, put this card into your hand as it resolves.)\nThe next time a source of your choice would deal damage to you this turn, prevent that damage.";
+const LAVA_AXE: &str = "Lava Axe deals 5 damage to target player or planeswalker.";
 const COMMANDEER: &str = "You may exile two blue cards from your hand rather than pay this spell's mana cost.\nGain control of target noncreature spell. You may choose new targets for it.";
 const REDIRECT: &str = "You may choose new targets for target spell.";
 
@@ -33,6 +39,15 @@ fn spell_effect(text: &str, name: &str) -> Effect {
         .into_iter()
         .find(|ability| matches!(ability.kind, AbilityKind::Spell))
         .expect("the spell ability must parse")
+        .effect
+}
+
+fn activated_effect(text: &str, name: &str) -> Effect {
+    *parse_oracle_text(text, name, &[], &["Enchantment".to_string()], &[])
+        .abilities
+        .into_iter()
+        .find(|ability| matches!(ability.kind, AbilityKind::Activated))
+        .expect("the activated ability must parse")
         .effect
 }
 
@@ -136,6 +151,63 @@ fn exact_source_controller_oracle_texts_route_through_oneshot_damage_replacement
             redirect_lifetime: RedirectionLifetime::OneOpportunity,
             ..
         }
+    ));
+}
+
+#[test]
+fn aegis_of_honor_exact_oracle_parses_to_source_controller_redirection() {
+    let effect = activated_effect(AEGIS_OF_HONOR, "Aegis of Honor");
+
+    assert!(matches!(
+        effect,
+        Effect::CreateDamageReplacement {
+            redirect_to: Some(DamageRedirectTarget::DamageSourceController),
+            redirect_lifetime: RedirectionLifetime::OneOpportunity,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn non_source_controller_oneshot_oracles_fall_through_to_their_existing_routes() {
+    let carom = parse_oracle_text(CAROM, "Carom", &[], &["Instant".to_string()], &[]);
+    let carom_spell = carom
+        .abilities
+        .iter()
+        .find(|ability| matches!(ability.kind, AbilityKind::Spell))
+        .expect("Carom must have a spell ability");
+    assert!(matches!(
+        carom_spell.effect.as_ref(),
+        Effect::CreateDamageReplacement {
+            redirect_to: Some(DamageRedirectTarget::ChosenObjectTarget),
+            ..
+        }
+    ));
+    assert!(matches!(
+        carom_spell
+            .sub_ability
+            .as_deref()
+            .map(|ability| ability.effect.as_ref()),
+        Some(Effect::Draw { .. })
+    ));
+
+    let invulnerability = parse_oracle_text(
+        INVULNERABILITY,
+        "Invulnerability",
+        &["Buyback".to_string()],
+        &["Instant".to_string()],
+        &[],
+    );
+    assert!(
+        invulnerability
+            .extracted_keywords
+            .iter()
+            .any(|keyword| matches!(keyword, Keyword::Buyback(_))),
+        "Invulnerability's exact Buyback line must remain on the normal keyword route"
+    );
+    assert!(matches!(
+        invulnerability.replacements.first(),
+        Some(replacement) if matches!(replacement.shield_kind, ShieldKind::Prevention { .. })
     ));
 }
 
@@ -397,6 +469,185 @@ fn reflect_damage_choice_redirects_only_the_chosen_sources_next_event() {
         runner.life(P1),
         p1_before - 3,
         "only the first chosen event redirects"
+    );
+}
+
+/// CR 510.1b + CR 510.2 + CR 602.2b + CR 609.7b + CR 614.1a + CR 614.9:
+/// Aegis's one-shot replacement ignores a creature source's combat damage,
+/// then redirects the next matching spell's damage to the spell's live controller.
+#[test]
+fn aegis_of_honor_ignores_creature_damage_and_redirects_matching_spell_to_live_controller() {
+    let p2 = PlayerId(2);
+    let mut scenario = GameScenario::new_n_player(3, 42);
+    scenario.at_phase(Phase::End);
+    scenario.with_library_top(P0, &["P0 draw"]);
+    scenario.with_library_top(P1, &["P1 draw"]);
+    scenario.with_library_top(p2, &["P2 draw"]);
+    let aegis = scenario
+        .add_enchantment_from_oracle(P0, "Aegis of Honor", AEGIS_OF_HONOR)
+        .id();
+    let _potential_blocker = scenario.add_creature(P0, "Potential blocker", 1, 1).id();
+    let attacker = scenario.add_creature(P1, "Aegis filter witness", 3, 3).id();
+    let axe = scenario
+        .add_spell_to_hand_from_oracle(P1, "Lava Axe", false, LAVA_AXE)
+        .with_mana_cost(engine::types::mana::ManaCost::zero())
+        .id();
+    let commandeer = scenario
+        .add_spell_to_hand_from_oracle(p2, "Commandeer", true, COMMANDEER)
+        .with_mana_cost(engine::types::mana::ManaCost::zero())
+        .id();
+    let mut runner = scenario.build();
+
+    for _ in 0..12 {
+        if runner.state().phase == Phase::PreCombatMain {
+            break;
+        }
+        runner
+            .act(GameAction::PassPriority)
+            .expect("production priority passing advances P0's end step into P1's main phase");
+    }
+    assert_eq!(runner.state().phase, Phase::PreCombatMain);
+    assert_eq!(runner.state().active_player, P1);
+    assert!(matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P1));
+
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P1 passes priority to P2");
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P2 passes priority to P0");
+    assert!(matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P0));
+    let added_mana = runner.state_mut().add_mana_to_pool(
+        P0,
+        ManaUnit::new(ManaType::Colorless, ObjectId(0), false, vec![]),
+    );
+    assert!(
+        added_mana.is_some(),
+        "the active priority window accepts the fresh Aegis activation mana"
+    );
+    runner.activate(aegis, 0).resolve();
+    assert!(
+        !runner.state().objects[&aegis]
+            .replacement_definitions
+            .is_empty(),
+        "resolving Aegis of Honor must install its role-less replacement"
+    );
+    assert!(matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P1));
+
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P1 passes through P1's precombat main phase");
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P2 passes through P1's precombat main phase");
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P0 passes through P1's precombat main phase");
+    assert!(matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P1));
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P1 passes through P1's beginning of combat step");
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P2 passes through P1's beginning of combat step");
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P0 passes through P1's beginning of combat step");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::DeclareAttackers { .. }
+    ));
+    runner
+        .declare_attackers(&[(attacker, AttackTarget::Player(P0))])
+        .expect("P1's production combat step accepts the unblocked attacker");
+    assert!(matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P1));
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P1 passes after declaring attackers");
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P2 passes after declaring attackers");
+    runner
+        .act(GameAction::PassPriority)
+        .expect("P0 passes after declaring attackers");
+    assert!(matches!(
+        runner.state().waiting_for,
+        WaitingFor::DeclareBlockers { .. }
+    ));
+    runner
+        .declare_blockers(&[])
+        .expect("P0 deliberately declares no blockers");
+
+    let combat = runner.combat_damage();
+    assert_eq!(
+        combat.life_delta(P0),
+        -3,
+        "the creature deals combat damage to P0"
+    );
+    assert_eq!(
+        combat.life_delta(P1),
+        0,
+        "the creature's controller takes no combat damage"
+    );
+    assert_eq!(
+        combat.life_delta(p2),
+        0,
+        "the third player takes no combat damage"
+    );
+    assert_eq!(runner.life(P0), 17, "the unblocked creature damages P0");
+    assert_eq!(runner.life(P1), 20, "combat does not damage P1");
+    assert_eq!(runner.life(p2), 20, "combat does not damage P2");
+    assert_eq!(
+        runner.state().objects[&aegis].replacement_definitions.len(),
+        1,
+        "Aegis retains its single replacement definition after nonmatching damage"
+    );
+    assert!(
+        !runner.state().objects[&aegis].replacement_definitions[0].is_consumed,
+        "nonmatching creature damage must not consume Aegis's one-shot replacement"
+    );
+
+    for _ in 0..12 {
+        if runner.state().phase == Phase::PostCombatMain {
+            break;
+        }
+        runner.act(GameAction::PassPriority).expect(
+            "production priority passing advances end of combat into P1's postcombat main phase",
+        );
+    }
+    assert_eq!(runner.state().phase, Phase::PostCombatMain);
+    assert_eq!(runner.state().active_player, P1);
+    assert!(matches!(runner.state().waiting_for, WaitingFor::Priority { player } if player == P1));
+
+    runner.cast(axe).target_player(P0).commit();
+    pass_priority_to(&mut runner, p2);
+    runner.cast(commandeer).target_objects(&[axe]).commit();
+    resolve_one_stack_item(&mut runner);
+
+    assert_eq!(
+        runner.state().objects[&axe].controller,
+        p2,
+        "Commandeer must change Axe's live controller before it deals damage"
+    );
+    resolve_one_stack_item(&mut runner);
+    assert_eq!(runner.life(P0), 17, "Aegis redirects Axe away from P0");
+    assert_eq!(
+        runner.life(P1),
+        20,
+        "Axe's owner is not its live controller"
+    );
+    assert_eq!(
+        runner.life(p2),
+        15,
+        "Aegis redirects damage to Axe's live controller"
+    );
+    assert!(
+        runner.state().objects[&aegis].replacement_definitions.len() == 1,
+        "Aegis installs exactly one replacement definition"
+    );
+    assert!(
+        runner.state().objects[&aegis].replacement_definitions[0].is_consumed,
+        "the matching Lava Axe damage consumes Aegis's one-shot replacement"
     );
 }
 

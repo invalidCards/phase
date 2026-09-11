@@ -13,10 +13,11 @@ use crate::types::ability::{
     AbilityCondition, AbilityCost, AbilityDefinition, AbilityKind, AbilityTag,
     ActivationManaPaymentRestriction, ActivationRestriction, AdditionalCost, CastTimingPermission,
     CastingRestriction, ChoiceType, ChosenSubtypeKind, ContinuousModification, ControllerRef,
-    CostReduction, DelayedTriggerCondition, Duration, Effect, EffectScope, FilterProp,
-    ManaProduction, ModalChoice, ParsedCondition, PlayerFilter, QuantityExpr, QuantityRef,
-    ReplacementDefinition, SolveCondition, SpellCastingOption, StaticCondition, StaticDefinition,
-    TapStateChange, TargetFilter, TriggerCondition, TriggerDefinition, TypedFilter,
+    CostReduction, DamageRedirectTarget, DelayedTriggerCondition, Duration, Effect, EffectScope,
+    FilterProp, ManaProduction, ModalChoice, ParsedCondition, PlayerFilter, QuantityExpr,
+    QuantityRef, ReplacementDefinition, SolveCondition, SpellCastingOption, StaticCondition,
+    StaticDefinition, TapStateChange, TargetFilter, TriggerCondition, TriggerDefinition,
+    TypedFilter,
 };
 use crate::types::ability_visit::{visit_ability_def_scoped, ResolutionScope};
 use crate::types::card::DraftEffect;
@@ -4689,6 +4690,24 @@ pub(crate) fn parse_oracle_ir(
     )
 }
 
+/// The generic replacement priority cannot reconstruct the target ownership of
+/// these two one-shot spell forms. Every other one-shot effect must fall
+/// through to that priority, which preserves its established chains and
+/// replacement lowering.
+fn oneshot_damage_replacement_requires_direct_spell_route(effect: &Effect) -> bool {
+    match effect {
+        Effect::CreateDamageReplacement {
+            redirect_to: Some(DamageRedirectTarget::DamageSourceController),
+            ..
+        } => true,
+        Effect::PreventDamage {
+            damage_source_filter: Some(filter),
+            ..
+        } => crate::types::ability::is_oneshot_target_source_prevent_shape(filter),
+        _ => false,
+    }
+}
+
 fn parse_normalized_oracle_ir(
     original_oracle_text: &str,
     normalized_oracle_text: &str,
@@ -6594,9 +6613,12 @@ fn parse_normalized_oracle_ir(
             }
         }
 
-        // Priority 8a: Effect-created damage replacements on spells are routed
-        // by parser success, so declined lines continue to replacement handling.
-        if let Some(effect) = oneshot_damage_replacement {
+        // The generic replacement priority below can lower the ordinary
+        // one-shot forms (such as Carom). Keep this direct spell route limited
+        // to the forms whose target hosting it cannot reconstruct.
+        if let Some(effect) = oneshot_damage_replacement
+            .filter(oneshot_damage_replacement_requires_direct_spell_route)
+        {
             emitter.ability_at(
                 item_line,
                 AbilityDefinition::new(AbilityKind::Spell, effect).description(line.clone()),
