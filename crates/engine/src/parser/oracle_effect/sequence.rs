@@ -2,7 +2,7 @@ use crate::parser::oracle_nom::error::{OracleError, OracleResult};
 use nom::branch::alt;
 use nom::bytes::complete::{tag, tag_no_case, take_till, take_until};
 use nom::character::complete::multispace1;
-use nom::combinator::{all_consuming, eof, map, map_opt, opt, rest, value};
+use nom::combinator::{all_consuming, eof, map, map_opt, not, opt, rest, value};
 use nom::sequence::{preceded, terminated};
 use nom::Parser;
 
@@ -1535,9 +1535,9 @@ pub(super) fn split_clause_sequence(text: &str) -> Vec<ClauseChunk> {
 /// this artifact" must remain a single instruction.
 fn starts_scoped_player_subject(lower: &str) -> bool {
     alt((
-        tag::<_, _, OracleError<'_>>("that player "),
-        tag("the player "),
-        tag("that opponent "),
+        value((), tag::<_, _, OracleError<'_>>("that player ")),
+        value((), (tag("the player "), not(tag("to ")))),
+        value((), tag("that opponent ")),
     ))
     .parse(lower)
     .is_ok()
@@ -10025,6 +10025,19 @@ mod tests {
         assert_eq!(
             chunks[0].text,
             "each player draws a card and gains control of it"
+        );
+        assert_eq!(chunks[0].boundary_after, Some(ClauseBoundary::Sentence));
+    }
+
+    #[test]
+    fn neighbor_player_subject_does_not_split_control_continuation() {
+        let chunks = split_subject_elided_control_continuations(split_clause_sequence(
+            "the player to your right untaps Karona and gains control of it.",
+        ));
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(
+            chunks[0].text,
+            "the player to your right untaps Karona and gains control of it"
         );
         assert_eq!(chunks[0].boundary_after, Some(ClauseBoundary::Sentence));
     }
