@@ -12,10 +12,10 @@ use crate::game::quantity::{
     resolve_quantity_with_targets,
 };
 use crate::types::ability::{
-    ChoiceValue, ChosenAttribute, CombatRelation, CombatRelationSubject, ControllerRef, CountScope,
-    FilterProp, Parity, ParitySource, PlayerFilter, PtStat, PtValueScope, QuantityExpr,
-    ResolvedAbility, SharedQuality, SharedQualityRelation, TargetFilter, TargetRef, TypeFilter,
-    TypedFilter,
+    CardTypeSetSource, CastManaSpentMetric, ChoiceValue, ChosenAttribute, CombatRelation,
+    CombatRelationSubject, ControllerRef, CountScope, FilterProp, Parity, ParitySource,
+    PlayerFilter, PtStat, PtValueScope, QuantityExpr, QuantityRef, ResolvedAbility, SharedQuality,
+    SharedQualityRelation, TargetFilter, TargetRef, TypeFilter, TypedFilter,
 };
 use crate::types::card::CardFace;
 use crate::types::card_type::{CoreType, Supertype};
@@ -1893,6 +1893,859 @@ pub(crate) fn player_filter_contains(
         | PlayerFilter::PlayerAttribute { .. }
         | PlayerFilter::ChosenPlayer { .. }
         | PlayerFilter::ParentObjectTargetOwner => false,
+    }
+}
+
+/// Whether `filter`, including every nested filter/property/player-filter
+/// surface, contains a property accepted by `predicate`.
+///
+/// This is the single read authority for a `FilterProp` buried below a
+/// `TargetFilter`. It deliberately mirrors the complete target → property →
+/// player topology rather than treating typed properties as terminal leaves:
+/// the nested filters in target restrictions and controller/recipient scopes
+/// are semantically part of the same filter expression.
+pub(crate) fn filter_contains_filter_prop(
+    filter: &TargetFilter,
+    predicate: &dyn Fn(&FilterProp) -> bool,
+) -> bool {
+    match filter {
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => filters
+            .iter()
+            .any(|inner| filter_contains_filter_prop(inner, predicate)),
+        TargetFilter::Not { filter } | TargetFilter::TrackedSetFiltered { filter, .. } => {
+            filter_contains_filter_prop(filter, predicate)
+        }
+        TargetFilter::PlayerMatching { player } => {
+            player_filter_contains_filter_prop(player, predicate)
+        }
+        TargetFilter::ChosenDamageSource { filter } => filter
+            .as_deref()
+            .is_some_and(|inner| filter_contains_filter_prop(inner, predicate)),
+        TargetFilter::Typed(typed) => typed
+            .properties
+            .iter()
+            .any(|prop| filter_prop_contains_filter_prop(prop, predicate)),
+        TargetFilter::None
+        | TargetFilter::Any
+        | TargetFilter::Player
+        | TargetFilter::Controller
+        | TargetFilter::SourceController
+        | TargetFilter::ControllerAndControlledPermanents { .. }
+        | TargetFilter::Opponent
+        | TargetFilter::SelfRef
+        | TargetFilter::GrantingObject
+        | TargetFilter::SourceOrPaired
+        | TargetFilter::StackAbility { .. }
+        | TargetFilter::StackSpell
+        | TargetFilter::SpecificObject { .. }
+        | TargetFilter::SpecificPlayer { .. }
+        | TargetFilter::PlayerWhoChoseLabel { .. }
+        | TargetFilter::Neighbor { .. }
+        | TargetFilter::ScopedPlayer
+        | TargetFilter::AttachedTo
+        | TargetFilter::LastCreated
+        | TargetFilter::LastRevealed
+        | TargetFilter::LastZoneChanged
+        | TargetFilter::CostPaidObject
+        | TargetFilter::AmassedArmy
+        | TargetFilter::ChosenCard
+        | TargetFilter::TrackedSet { .. }
+        | TargetFilter::ExiledBySource
+        | TargetFilter::ExiledCardByIndex { .. }
+        | TargetFilter::TriggeringSpellController
+        | TargetFilter::TriggeringSpellOwner
+        | TargetFilter::TriggeringPlayer
+        | TargetFilter::TriggeringSource
+        | TargetFilter::EventTarget
+        | TargetFilter::TriggeringSourceController
+        | TargetFilter::EventTargetController
+        | TargetFilter::ParentTarget
+        | TargetFilter::ParentTargetSlot { .. }
+        | TargetFilter::ParentTargetController
+        | TargetFilter::ParentTargetOwner
+        | TargetFilter::SourceChosenPlayer
+        | TargetFilter::OriginalController
+        | TargetFilter::OriginalSource
+        | TargetFilter::PostReplacementSourceController
+        | TargetFilter::PostReplacementDamageSource
+        | TargetFilter::PostReplacementDamageTarget
+        | TargetFilter::PostReplacementDamageTargetOwner
+        | TargetFilter::DefendingPlayer
+        | TargetFilter::HasChosenName
+        | TargetFilter::Named { .. }
+        | TargetFilter::Owner
+        | TargetFilter::AllPlayers => false,
+    }
+}
+
+fn filter_prop_contains_filter_prop(
+    prop: &FilterProp,
+    predicate: &dyn Fn(&FilterProp) -> bool,
+) -> bool {
+    predicate(prop)
+        || match prop {
+            FilterProp::CanEnchant { target } => filter_contains_filter_prop(target, predicate),
+            FilterProp::DifferentNameFrom { filter } => {
+                filter_contains_filter_prop(filter, predicate)
+            }
+            FilterProp::DistinctFrom { reference } => {
+                filter_contains_filter_prop(reference, predicate)
+            }
+            FilterProp::SharesQuality { reference, .. } => reference
+                .as_deref()
+                .is_some_and(|inner| filter_contains_filter_prop(inner, predicate)),
+            FilterProp::Targets { filter } | FilterProp::TargetsOnly { filter } => {
+                filter_contains_filter_prop(filter, predicate)
+            }
+            FilterProp::Not { prop } => filter_prop_contains_filter_prop(prop, predicate),
+            FilterProp::AnyOf { props } => props
+                .iter()
+                .any(|inner| filter_prop_contains_filter_prop(inner, predicate)),
+            FilterProp::ControllerMatches { player } => {
+                player_filter_contains_filter_prop(player, predicate)
+            }
+            FilterProp::DealtDamageThisTurn { recipient, .. } => recipient
+                .as_ref()
+                .is_some_and(|scope| player_filter_contains_filter_prop(scope, predicate)),
+            FilterProp::Counters { count, .. }
+            | FilterProp::Cmc { value: count, .. }
+            | FilterProp::PtComparison { value: count, .. } => {
+                quantity_expr_contains_filter_prop(count, predicate)
+            }
+            FilterProp::Token
+            | FilterProp::NonToken
+            | FilterProp::RepresentedByCard
+            | FilterProp::ControllerChoseLabel { .. }
+            | FilterProp::WasPlayed
+            | FilterProp::Attacking { .. }
+            | FilterProp::Blocking
+            | FilterProp::BlockingSource
+            | FilterProp::CombatRelation { .. }
+            | FilterProp::Unblocked
+            | FilterProp::AttackingAlone
+            | FilterProp::BlockingAlone
+            | FilterProp::Tapped
+            | FilterProp::Untapped
+            | FilterProp::IsSaddled
+            | FilterProp::SaddledSource
+            | FilterProp::ConvokedSource
+            | FilterProp::ProtectorMatches { .. }
+            | FilterProp::HasHasteOrControlledSinceTurnBegan
+            | FilterProp::WithKeyword { .. }
+            | FilterProp::HasKeywordKind { .. }
+            | FilterProp::WithoutKeyword { .. }
+            | FilterProp::WithoutKeywordKind { .. }
+            | FilterProp::ManaValueParity { .. }
+            | FilterProp::ManaCostIn { .. }
+            | FilterProp::InZone { .. }
+            | FilterProp::Owned { .. }
+            | FilterProp::Foretold
+            | FilterProp::HasAdventure
+            | FilterProp::EnchantedBy
+            | FilterProp::EquippedBy
+            | FilterProp::AttachedToSource
+            | FilterProp::AttachedToRecipient
+            | FilterProp::AttachedToPlayer { .. }
+            | FilterProp::HasAttachment { .. }
+            | FilterProp::HasAnyAttachmentOf { .. }
+            | FilterProp::Another
+            | FilterProp::Unpaired
+            | FilterProp::OtherThanTriggerObject
+            | FilterProp::HasColor { .. }
+            | FilterProp::PowerGTSource
+            | FilterProp::ColorCount { .. }
+            | FilterProp::ManaSymbolCount { .. }
+            | FilterProp::HasSupertype { .. }
+            | FilterProp::IsChosenCreatureType
+            | FilterProp::MostPrevalentCreatureTypeIn { .. }
+            | FilterProp::IsChosenColor
+            | FilterProp::IsChosenCardType
+            | FilterProp::MatchesLastChosenCardPredicate
+            | FilterProp::HasSingleTarget
+            | FilterProp::Modal
+            | FilterProp::NotColor { .. }
+            | FilterProp::NotSupertype { .. }
+            | FilterProp::Suspected
+            | FilterProp::Renowned
+            | FilterProp::Goaded
+            | FilterProp::ToughnessGTPower
+            | FilterProp::PowerExceedsBase
+            | FilterProp::InTrackedSet { .. }
+            | FilterProp::Modified
+            | FilterProp::Historic
+            | FilterProp::NotHistoric
+            | FilterProp::InAnyZone { .. }
+            | FilterProp::WasDealtDamageThisTurn
+            | FilterProp::EnteredThisTurn
+            | FilterProp::ControlledContinuouslySinceTurnBegan
+            | FilterProp::ZoneChangedThisTurn { .. }
+            | FilterProp::AttackedThisTurn { .. }
+            | FilterProp::BlockedThisTurn
+            | FilterProp::AttackedOrBlockedThisTurn
+            | FilterProp::CountersPutOnThisTurn { .. }
+            | FilterProp::FaceDown
+            | FilterProp::Transformed
+            | FilterProp::CouldBeTargetedByTriggeringSpell
+            | FilterProp::HasXInManaCost
+            | FilterProp::HasXInActivationCost
+            | FilterProp::WasKicked
+            | FilterProp::HasManaAbility
+            | FilterProp::HasNoAbilities
+            | FilterProp::Named { .. }
+            | FilterProp::SameName
+            | FilterProp::SameNameAsParentTarget
+            | FilterProp::SameNameAsExiledBySource
+            | FilterProp::NameMatchesAnyPermanent { .. }
+            | FilterProp::IsCommander
+            | FilterProp::SharesCreatureTypeWithCommander
+            | FilterProp::Other { .. } => false,
+        }
+}
+
+fn player_filter_contains_filter_prop(
+    filter: &PlayerFilter,
+    predicate: &dyn Fn(&FilterProp) -> bool,
+) -> bool {
+    match filter {
+        PlayerFilter::OpponentDealtDamage { source, .. } => source
+            .as_deref()
+            .is_some_and(|inner| filter_contains_filter_prop(inner, predicate)),
+        PlayerFilter::ControlsCount { filter, count, .. } => {
+            filter_contains_filter_prop(filter, predicate)
+                || quantity_expr_contains_filter_prop(count, predicate)
+        }
+        PlayerFilter::PlayerAttribute { attr, value, .. } => {
+            quantity_ref_contains_filter_prop(attr, predicate)
+                || quantity_expr_contains_filter_prop(value, predicate)
+        }
+        PlayerFilter::TrackedSetPossessor { filter, .. } => {
+            filter_contains_filter_prop(filter, predicate)
+        }
+        PlayerFilter::AllExcept { exclude } => {
+            player_filter_contains_filter_prop(exclude, predicate)
+        }
+        PlayerFilter::Controller
+        | PlayerFilter::Opponent
+        | PlayerFilter::DefendingPlayer
+        | PlayerFilter::OpponentLostLife
+        | PlayerFilter::OpponentGainedLife
+        | PlayerFilter::HasLostTheGame
+        | PlayerFilter::OpponentAttacked { .. }
+        | PlayerFilter::OpponentAttackingEnchantedPlayer
+        | PlayerFilter::All
+        | PlayerFilter::HighestSpeed
+        | PlayerFilter::ZoneChangedThisWay
+        | PlayerFilter::PerformedActionThisWay { .. }
+        | PlayerFilter::OwnersOfCardsExiledBySource
+        | PlayerFilter::TriggeringPlayer
+        | PlayerFilter::OpponentOtherThanTriggering
+        | PlayerFilter::OpponentOfTriggeringPlayer
+        | PlayerFilter::OpponentOfTriggeringPlayerNotAttacked
+        | PlayerFilter::VotedFor { .. }
+        | PlayerFilter::ParentObjectTargetController
+        | PlayerFilter::ChosenPlayer { .. }
+        | PlayerFilter::ParentObjectTargetOwner => false,
+    }
+}
+
+/// Visits `FilterProp` leaves carried by dynamic quantity thresholds. This is
+/// part of the same filter grammar as the direct property recursion above:
+/// quantities can themselves count filtered object/player populations.
+fn quantity_expr_contains_filter_prop(
+    expr: &QuantityExpr,
+    predicate: &dyn Fn(&FilterProp) -> bool,
+) -> bool {
+    match expr {
+        QuantityExpr::Ref { qty } => quantity_ref_contains_filter_prop(qty, predicate),
+        QuantityExpr::DivideRounded { inner, .. }
+        | QuantityExpr::Offset { inner, .. }
+        | QuantityExpr::ClampMin { inner, .. }
+        | QuantityExpr::Multiply { inner, .. }
+        | QuantityExpr::UpTo { max: inner }
+        | QuantityExpr::Power {
+            exponent: inner, ..
+        } => quantity_expr_contains_filter_prop(inner, predicate),
+        QuantityExpr::Sum { exprs } | QuantityExpr::Max { exprs } => exprs
+            .iter()
+            .any(|inner| quantity_expr_contains_filter_prop(inner, predicate)),
+        QuantityExpr::Difference { left, right } => {
+            quantity_expr_contains_filter_prop(left, predicate)
+                || quantity_expr_contains_filter_prop(right, predicate)
+        }
+        QuantityExpr::Fixed { .. } => false,
+    }
+}
+
+/// EXHAUSTIVE, wildcard-free leaf classifier for
+/// [`quantity_expr_contains_filter_prop`]. Keep this arm-for-arm with
+/// [`rewrite_quantity_ref_filter_props`] so readers and rewriters reach the
+/// same dynamic quantity topology.
+fn quantity_ref_contains_filter_prop(
+    qty: &QuantityRef,
+    predicate: &dyn Fn(&FilterProp) -> bool,
+) -> bool {
+    match qty {
+        QuantityRef::ObjectCount { filter }
+        | QuantityRef::ObjectCountDistinct { filter, .. }
+        | QuantityRef::ObjectCountBySharedQuality { filter, .. }
+        | QuantityRef::CountersOnObjects { filter, .. }
+        | QuantityRef::ControlledByEachPlayer { filter, .. }
+        | QuantityRef::EnteredThisTurn { filter }
+        | QuantityRef::SacrificedThisTurn { filter, .. }
+        | QuantityRef::BattlefieldEntriesThisTurn { filter, .. }
+        | QuantityRef::ZoneChangeCountThisTurn { filter, .. }
+        | QuantityRef::ZoneChangeAggregateThisTurn { filter, .. }
+        | QuantityRef::CounterAddedThisTurn { target: filter, .. }
+        | QuantityRef::TokensCreatedThisTurn { filter, .. }
+        | QuantityRef::DistinctCounterKindsAmong { filter } => {
+            filter_contains_filter_prop(filter, predicate)
+        }
+        QuantityRef::TargetObjectManaValue { filter }
+        | QuantityRef::FilteredTrackedSetSize { filter, .. } => {
+            filter_contains_filter_prop(filter, predicate)
+        }
+        QuantityRef::PlayerCount { filter } | QuantityRef::EventContextPlayerCount { filter } => {
+            player_filter_contains_filter_prop(filter, predicate)
+        }
+        QuantityRef::PropertyAggregate(aggregate) => {
+            card_type_set_source_contains_filter_prop(aggregate.source(), predicate)
+        }
+        QuantityRef::DistinctCardTypes { source }
+        | QuantityRef::DistinctSubtypes { source, .. }
+        | QuantityRef::DistinctColorsAmong { source } => {
+            card_type_set_source_contains_filter_prop(source, predicate)
+        }
+        QuantityRef::ZoneCardCount { filter, .. }
+        | QuantityRef::SpellsCastThisTurn { filter, .. }
+        | QuantityRef::SpellsCastBeforeTriggeringSpell { filter, .. }
+        | QuantityRef::AttackedThisTurn { filter, .. }
+        | QuantityRef::SpellsCastThisGame { filter, .. } => filter
+            .as_ref()
+            .is_some_and(|inner| filter_contains_filter_prop(inner, predicate)),
+        QuantityRef::DamageDealtThisTurn { source, target, .. } => {
+            filter_contains_filter_prop(source, predicate)
+                || filter_contains_filter_prop(target, predicate)
+        }
+        QuantityRef::ManaSpentToCast { metric, .. } => match metric {
+            CastManaSpentMetric::FromSource { source_filter } => {
+                filter_contains_filter_prop(source_filter, predicate)
+            }
+            CastManaSpentMetric::Total
+            | CastManaSpentMetric::DistinctColors
+            | CastManaSpentMetric::OfColor { .. } => false,
+        },
+        QuantityRef::HandSize { .. }
+        | QuantityRef::LifeTotal { .. }
+        | QuantityRef::GraveyardSize { .. }
+        | QuantityRef::LifeAboveStarting
+        | QuantityRef::StartingLifeTotal
+        | QuantityRef::TriggeringDiscoverValue
+        | QuantityRef::TriggeringScryLookCount
+        | QuantityRef::TriggeringScryBottomCount
+        | QuantityRef::CountersOn { .. }
+        | QuantityRef::PlayerCounter { .. }
+        | QuantityRef::TargetControllerCounter { .. }
+        | QuantityRef::Variable { .. }
+        | QuantityRef::Power { .. }
+        | QuantityRef::BasePower { .. }
+        | QuantityRef::Intensity { .. }
+        | QuantityRef::Toughness { .. }
+        | QuantityRef::ObjectManaValue { .. }
+        | QuantityRef::ObjectColorCount { .. }
+        | QuantityRef::ObjectNameWordCount { .. }
+        | QuantityRef::ObjectTypelineComponentCount { .. }
+        | QuantityRef::ManaSymbolsInManaCost { .. }
+        | QuantityRef::SelfManaValue
+        | QuantityRef::TargetZoneCardCount { .. }
+        | QuantityRef::Devotion { .. }
+        | QuantityRef::CardsExiledBySource
+        | QuantityRef::ExiledCardPower { .. }
+        | QuantityRef::BasicLandTypeCount { .. }
+        | QuantityRef::TrackedSetSize
+        | QuantityRef::ExiledFromHandThisResolution
+        | QuantityRef::PreviousEffectAmount { .. }
+        | QuantityRef::PreviousEffectCount
+        | QuantityRef::LifeLostThisTurn { .. }
+        | QuantityRef::PartySize { .. }
+        | QuantityRef::UnspentMana { .. }
+        | QuantityRef::Speed { .. }
+        | QuantityRef::AttachmentsOnLeavingObject { .. }
+        | QuantityRef::EventContextAmount
+        | QuantityRef::EventContextSourceCostX
+        | QuantityRef::EventContextSourceModesChosen
+        | QuantityRef::CrimesCommittedThisTurn
+        | QuantityRef::BendTypesThisTurn
+        | QuantityRef::LifeGainedThisTurn { .. }
+        | QuantityRef::CardsDrawnThisTurn { .. }
+        | QuantityRef::LandsPlayedThisTurn { .. }
+        | QuantityRef::TurnsTaken
+        | QuantityRef::ChosenNumber
+        | QuantityRef::PlayerChosenNumber { .. }
+        | QuantityRef::DescendedThisTurn
+        | QuantityRef::LoyaltyAbilitiesActivatedThisTurn { .. }
+        | QuantityRef::SpellsCastLastTurn
+        | QuantityRef::CardsDiscardedThisTurn { .. }
+        | QuantityRef::PlayerActionsThisTurn { .. }
+        | QuantityRef::DungeonsCompleted
+        | QuantityRef::CostXPaid
+        | QuantityRef::KickerCount
+        | QuantityRef::AdditionalCostPaymentCount
+        | QuantityRef::AdditionalCostPaymentCountFor { .. }
+        | QuantityRef::ConvokedCreatureCount
+        | QuantityRef::TimesCostPaidThisResolution
+        | QuantityRef::ColorsInCommandersColorIdentity
+        | QuantityRef::CommanderCastFromCommandZoneCount
+        | QuantityRef::CommanderManaValue { .. }
+        | QuantityRef::VoteCount { .. } => false,
+    }
+}
+
+fn card_type_set_source_contains_filter_prop(
+    source: &CardTypeSetSource,
+    predicate: &dyn Fn(&FilterProp) -> bool,
+) -> bool {
+    match source {
+        CardTypeSetSource::Objects { filter } => filter_contains_filter_prop(filter, predicate),
+        CardTypeSetSource::TurnJournal { filter, .. } => filter
+            .as_ref()
+            .is_some_and(|inner| filter_contains_filter_prop(inner, predicate)),
+        CardTypeSetSource::AnyOf { .. } => {
+            let mut contains = false;
+            let complete = source.try_for_each_member(
+                crate::types::ability::UNION_DEPTH_BUDGET,
+                &mut |leaf| {
+                    contains |= card_type_set_source_contains_filter_prop(leaf, predicate);
+                },
+            );
+            assert!(complete, "validated card-type source union depth");
+            contains
+        }
+        CardTypeSetSource::Zone { .. }
+        | CardTypeSetSource::ExiledBySource
+        | CardTypeSetSource::TrackedSet { .. } => false,
+    }
+}
+
+/// Rewrites only `IsChosenCardType` leaves beneath `filter` to the corresponding
+/// creature-type discriminator. The recursive topology is deliberately shared
+/// with [`filter_contains_filter_prop`] at this module boundary: neither parser
+/// callers nor individual consumers may maintain a partial traversal.
+pub(crate) fn retarget_chosen_card_type_to_creature_type(filter: &mut TargetFilter) {
+    rewrite_filter_props(filter, &mut |prop| {
+        if matches!(prop, FilterProp::IsChosenCardType) {
+            *prop = FilterProp::IsChosenCreatureType;
+        }
+    });
+}
+
+fn rewrite_filter_props(filter: &mut TargetFilter, rewrite: &mut dyn FnMut(&mut FilterProp)) {
+    match filter {
+        TargetFilter::And { filters } | TargetFilter::Or { filters } => filters
+            .iter_mut()
+            .for_each(|inner| rewrite_filter_props(inner, rewrite)),
+        TargetFilter::Not { filter } | TargetFilter::TrackedSetFiltered { filter, .. } => {
+            rewrite_filter_props(filter, rewrite)
+        }
+        TargetFilter::PlayerMatching { player } => rewrite_player_filter_props(player, rewrite),
+        TargetFilter::ChosenDamageSource { filter } => filter
+            .as_deref_mut()
+            .into_iter()
+            .for_each(|inner| rewrite_filter_props(inner, rewrite)),
+        TargetFilter::Typed(typed) => typed
+            .properties
+            .iter_mut()
+            .for_each(|prop| rewrite_filter_prop(prop, rewrite)),
+        TargetFilter::None
+        | TargetFilter::Any
+        | TargetFilter::Player
+        | TargetFilter::Controller
+        | TargetFilter::SourceController
+        | TargetFilter::ControllerAndControlledPermanents { .. }
+        | TargetFilter::Opponent
+        | TargetFilter::SelfRef
+        | TargetFilter::GrantingObject
+        | TargetFilter::SourceOrPaired
+        | TargetFilter::StackAbility { .. }
+        | TargetFilter::StackSpell
+        | TargetFilter::SpecificObject { .. }
+        | TargetFilter::SpecificPlayer { .. }
+        | TargetFilter::PlayerWhoChoseLabel { .. }
+        | TargetFilter::Neighbor { .. }
+        | TargetFilter::ScopedPlayer
+        | TargetFilter::AttachedTo
+        | TargetFilter::LastCreated
+        | TargetFilter::LastRevealed
+        | TargetFilter::LastZoneChanged
+        | TargetFilter::CostPaidObject
+        | TargetFilter::AmassedArmy
+        | TargetFilter::ChosenCard
+        | TargetFilter::TrackedSet { .. }
+        | TargetFilter::ExiledBySource
+        | TargetFilter::ExiledCardByIndex { .. }
+        | TargetFilter::TriggeringSpellController
+        | TargetFilter::TriggeringSpellOwner
+        | TargetFilter::TriggeringPlayer
+        | TargetFilter::TriggeringSource
+        | TargetFilter::EventTarget
+        | TargetFilter::TriggeringSourceController
+        | TargetFilter::EventTargetController
+        | TargetFilter::ParentTarget
+        | TargetFilter::ParentTargetSlot { .. }
+        | TargetFilter::ParentTargetController
+        | TargetFilter::ParentTargetOwner
+        | TargetFilter::SourceChosenPlayer
+        | TargetFilter::OriginalController
+        | TargetFilter::OriginalSource
+        | TargetFilter::PostReplacementSourceController
+        | TargetFilter::PostReplacementDamageSource
+        | TargetFilter::PostReplacementDamageTarget
+        | TargetFilter::PostReplacementDamageTargetOwner
+        | TargetFilter::DefendingPlayer
+        | TargetFilter::HasChosenName
+        | TargetFilter::Named { .. }
+        | TargetFilter::Owner
+        | TargetFilter::AllPlayers => {}
+    }
+}
+
+fn rewrite_filter_prop(prop: &mut FilterProp, rewrite: &mut dyn FnMut(&mut FilterProp)) {
+    rewrite(prop);
+    match prop {
+        FilterProp::CanEnchant { target } => rewrite_filter_props(target, rewrite),
+        FilterProp::DifferentNameFrom { filter } => rewrite_filter_props(filter, rewrite),
+        FilterProp::DistinctFrom { reference } => rewrite_filter_props(reference, rewrite),
+        FilterProp::SharesQuality { reference, .. } => reference
+            .as_deref_mut()
+            .into_iter()
+            .for_each(|inner| rewrite_filter_props(inner, rewrite)),
+        FilterProp::Targets { filter } | FilterProp::TargetsOnly { filter } => {
+            rewrite_filter_props(filter, rewrite)
+        }
+        FilterProp::Not { prop } => rewrite_filter_prop(prop, rewrite),
+        FilterProp::AnyOf { props } => props
+            .iter_mut()
+            .for_each(|inner| rewrite_filter_prop(inner, rewrite)),
+        FilterProp::ControllerMatches { player } => rewrite_player_filter_props(player, rewrite),
+        FilterProp::DealtDamageThisTurn { recipient, .. } => recipient
+            .as_mut()
+            .into_iter()
+            .for_each(|scope| rewrite_player_filter_props(scope, rewrite)),
+        FilterProp::Counters { count, .. }
+        | FilterProp::Cmc { value: count, .. }
+        | FilterProp::PtComparison { value: count, .. } => {
+            rewrite_quantity_expr_filter_props(count, rewrite)
+        }
+        FilterProp::Token
+        | FilterProp::NonToken
+        | FilterProp::RepresentedByCard
+        | FilterProp::ControllerChoseLabel { .. }
+        | FilterProp::WasPlayed
+        | FilterProp::Attacking { .. }
+        | FilterProp::Blocking
+        | FilterProp::BlockingSource
+        | FilterProp::CombatRelation { .. }
+        | FilterProp::Unblocked
+        | FilterProp::AttackingAlone
+        | FilterProp::BlockingAlone
+        | FilterProp::Tapped
+        | FilterProp::Untapped
+        | FilterProp::IsSaddled
+        | FilterProp::SaddledSource
+        | FilterProp::ConvokedSource
+        | FilterProp::ProtectorMatches { .. }
+        | FilterProp::HasHasteOrControlledSinceTurnBegan
+        | FilterProp::WithKeyword { .. }
+        | FilterProp::HasKeywordKind { .. }
+        | FilterProp::WithoutKeyword { .. }
+        | FilterProp::WithoutKeywordKind { .. }
+        | FilterProp::ManaValueParity { .. }
+        | FilterProp::ManaCostIn { .. }
+        | FilterProp::InZone { .. }
+        | FilterProp::Owned { .. }
+        | FilterProp::Foretold
+        | FilterProp::HasAdventure
+        | FilterProp::EnchantedBy
+        | FilterProp::EquippedBy
+        | FilterProp::AttachedToSource
+        | FilterProp::AttachedToRecipient
+        | FilterProp::AttachedToPlayer { .. }
+        | FilterProp::HasAttachment { .. }
+        | FilterProp::HasAnyAttachmentOf { .. }
+        | FilterProp::Another
+        | FilterProp::Unpaired
+        | FilterProp::OtherThanTriggerObject
+        | FilterProp::HasColor { .. }
+        | FilterProp::PowerGTSource
+        | FilterProp::ColorCount { .. }
+        | FilterProp::ManaSymbolCount { .. }
+        | FilterProp::HasSupertype { .. }
+        | FilterProp::IsChosenCreatureType
+        | FilterProp::MostPrevalentCreatureTypeIn { .. }
+        | FilterProp::IsChosenColor
+        | FilterProp::IsChosenCardType
+        | FilterProp::MatchesLastChosenCardPredicate
+        | FilterProp::HasSingleTarget
+        | FilterProp::Modal
+        | FilterProp::NotColor { .. }
+        | FilterProp::NotSupertype { .. }
+        | FilterProp::Suspected
+        | FilterProp::Renowned
+        | FilterProp::Goaded
+        | FilterProp::ToughnessGTPower
+        | FilterProp::PowerExceedsBase
+        | FilterProp::InTrackedSet { .. }
+        | FilterProp::Modified
+        | FilterProp::Historic
+        | FilterProp::NotHistoric
+        | FilterProp::InAnyZone { .. }
+        | FilterProp::WasDealtDamageThisTurn
+        | FilterProp::EnteredThisTurn
+        | FilterProp::ControlledContinuouslySinceTurnBegan
+        | FilterProp::ZoneChangedThisTurn { .. }
+        | FilterProp::AttackedThisTurn { .. }
+        | FilterProp::BlockedThisTurn
+        | FilterProp::AttackedOrBlockedThisTurn
+        | FilterProp::CountersPutOnThisTurn { .. }
+        | FilterProp::FaceDown
+        | FilterProp::Transformed
+        | FilterProp::CouldBeTargetedByTriggeringSpell
+        | FilterProp::HasXInManaCost
+        | FilterProp::HasXInActivationCost
+        | FilterProp::WasKicked
+        | FilterProp::HasManaAbility
+        | FilterProp::HasNoAbilities
+        | FilterProp::Named { .. }
+        | FilterProp::SameName
+        | FilterProp::SameNameAsParentTarget
+        | FilterProp::SameNameAsExiledBySource
+        | FilterProp::NameMatchesAnyPermanent { .. }
+        | FilterProp::IsCommander
+        | FilterProp::SharesCreatureTypeWithCommander
+        | FilterProp::Other { .. } => {}
+    }
+}
+
+fn rewrite_player_filter_props(
+    filter: &mut PlayerFilter,
+    rewrite: &mut dyn FnMut(&mut FilterProp),
+) {
+    match filter {
+        PlayerFilter::OpponentDealtDamage { source, .. } => source
+            .as_deref_mut()
+            .into_iter()
+            .for_each(|inner| rewrite_filter_props(inner, rewrite)),
+        PlayerFilter::ControlsCount { filter, count, .. } => {
+            rewrite_filter_props(filter, rewrite);
+            rewrite_quantity_expr_filter_props(count, rewrite);
+        }
+        PlayerFilter::PlayerAttribute { attr, value, .. } => {
+            rewrite_quantity_ref_filter_props(attr, rewrite);
+            rewrite_quantity_expr_filter_props(value, rewrite);
+        }
+        PlayerFilter::TrackedSetPossessor { filter, .. } => rewrite_filter_props(filter, rewrite),
+        PlayerFilter::AllExcept { exclude } => rewrite_player_filter_props(exclude, rewrite),
+        PlayerFilter::Controller
+        | PlayerFilter::Opponent
+        | PlayerFilter::DefendingPlayer
+        | PlayerFilter::OpponentLostLife
+        | PlayerFilter::OpponentGainedLife
+        | PlayerFilter::HasLostTheGame
+        | PlayerFilter::OpponentAttacked { .. }
+        | PlayerFilter::OpponentAttackingEnchantedPlayer
+        | PlayerFilter::All
+        | PlayerFilter::HighestSpeed
+        | PlayerFilter::ZoneChangedThisWay
+        | PlayerFilter::PerformedActionThisWay { .. }
+        | PlayerFilter::OwnersOfCardsExiledBySource
+        | PlayerFilter::TriggeringPlayer
+        | PlayerFilter::OpponentOtherThanTriggering
+        | PlayerFilter::OpponentOfTriggeringPlayer
+        | PlayerFilter::OpponentOfTriggeringPlayerNotAttacked
+        | PlayerFilter::VotedFor { .. }
+        | PlayerFilter::ParentObjectTargetController
+        | PlayerFilter::ChosenPlayer { .. }
+        | PlayerFilter::ParentObjectTargetOwner => {}
+    }
+}
+
+/// Mutable counterpart of [`quantity_expr_contains_filter_prop`]. Keep this
+/// structural recursion in lockstep with the reader so a filter property cannot
+/// be found below a dynamic threshold without also being rewritten there.
+fn rewrite_quantity_expr_filter_props(
+    expr: &mut QuantityExpr,
+    rewrite: &mut dyn FnMut(&mut FilterProp),
+) {
+    match expr {
+        QuantityExpr::Ref { qty } => rewrite_quantity_ref_filter_props(qty, rewrite),
+        QuantityExpr::DivideRounded { inner, .. }
+        | QuantityExpr::Offset { inner, .. }
+        | QuantityExpr::ClampMin { inner, .. }
+        | QuantityExpr::Multiply { inner, .. }
+        | QuantityExpr::UpTo { max: inner }
+        | QuantityExpr::Power {
+            exponent: inner, ..
+        } => rewrite_quantity_expr_filter_props(inner, rewrite),
+        QuantityExpr::Sum { exprs } | QuantityExpr::Max { exprs } => exprs
+            .iter_mut()
+            .for_each(|inner| rewrite_quantity_expr_filter_props(inner, rewrite)),
+        QuantityExpr::Difference { left, right } => {
+            rewrite_quantity_expr_filter_props(left, rewrite);
+            rewrite_quantity_expr_filter_props(right, rewrite);
+        }
+        QuantityExpr::Fixed { .. } => {}
+    }
+}
+
+/// EXHAUSTIVE, wildcard-free mutable twin of
+/// [`quantity_ref_contains_filter_prop`].
+fn rewrite_quantity_ref_filter_props(
+    qty: &mut QuantityRef,
+    rewrite: &mut dyn FnMut(&mut FilterProp),
+) {
+    match qty {
+        QuantityRef::ObjectCount { filter }
+        | QuantityRef::ObjectCountDistinct { filter, .. }
+        | QuantityRef::ObjectCountBySharedQuality { filter, .. }
+        | QuantityRef::CountersOnObjects { filter, .. }
+        | QuantityRef::ControlledByEachPlayer { filter, .. }
+        | QuantityRef::EnteredThisTurn { filter }
+        | QuantityRef::SacrificedThisTurn { filter, .. }
+        | QuantityRef::BattlefieldEntriesThisTurn { filter, .. }
+        | QuantityRef::ZoneChangeCountThisTurn { filter, .. }
+        | QuantityRef::ZoneChangeAggregateThisTurn { filter, .. }
+        | QuantityRef::CounterAddedThisTurn { target: filter, .. }
+        | QuantityRef::TokensCreatedThisTurn { filter, .. }
+        | QuantityRef::DistinctCounterKindsAmong { filter } => {
+            rewrite_filter_props(filter, rewrite)
+        }
+        QuantityRef::TargetObjectManaValue { filter }
+        | QuantityRef::FilteredTrackedSetSize { filter, .. } => {
+            rewrite_filter_props(filter, rewrite)
+        }
+        QuantityRef::PlayerCount { filter } | QuantityRef::EventContextPlayerCount { filter } => {
+            rewrite_player_filter_props(filter, rewrite)
+        }
+        QuantityRef::PropertyAggregate(aggregate) => {
+            let mut source = aggregate.source().clone();
+            rewrite_card_type_set_source_filter_props(&mut source, rewrite);
+            *aggregate = crate::types::ability::PropertyAggregate::new(
+                aggregate.function(),
+                aggregate.property(),
+                source,
+            )
+            .expect("rewriting a property aggregate filter preserves aggregate validity");
+        }
+        QuantityRef::DistinctCardTypes { source }
+        | QuantityRef::DistinctSubtypes { source, .. }
+        | QuantityRef::DistinctColorsAmong { source } => {
+            rewrite_card_type_set_source_filter_props(source, rewrite)
+        }
+        QuantityRef::ZoneCardCount { filter, .. }
+        | QuantityRef::SpellsCastThisTurn { filter, .. }
+        | QuantityRef::SpellsCastBeforeTriggeringSpell { filter, .. }
+        | QuantityRef::AttackedThisTurn { filter, .. }
+        | QuantityRef::SpellsCastThisGame { filter, .. } => filter
+            .as_mut()
+            .into_iter()
+            .for_each(|inner| rewrite_filter_props(inner, rewrite)),
+        QuantityRef::DamageDealtThisTurn { source, target, .. } => {
+            rewrite_filter_props(source, rewrite);
+            rewrite_filter_props(target, rewrite);
+        }
+        QuantityRef::ManaSpentToCast { metric, .. } => match metric {
+            CastManaSpentMetric::FromSource { source_filter } => {
+                rewrite_filter_props(source_filter, rewrite)
+            }
+            CastManaSpentMetric::Total
+            | CastManaSpentMetric::DistinctColors
+            | CastManaSpentMetric::OfColor { .. } => {}
+        },
+        QuantityRef::HandSize { .. }
+        | QuantityRef::LifeTotal { .. }
+        | QuantityRef::GraveyardSize { .. }
+        | QuantityRef::LifeAboveStarting
+        | QuantityRef::StartingLifeTotal
+        | QuantityRef::TriggeringDiscoverValue
+        | QuantityRef::TriggeringScryLookCount
+        | QuantityRef::TriggeringScryBottomCount
+        | QuantityRef::CountersOn { .. }
+        | QuantityRef::PlayerCounter { .. }
+        | QuantityRef::TargetControllerCounter { .. }
+        | QuantityRef::Variable { .. }
+        | QuantityRef::Power { .. }
+        | QuantityRef::BasePower { .. }
+        | QuantityRef::Intensity { .. }
+        | QuantityRef::Toughness { .. }
+        | QuantityRef::ObjectManaValue { .. }
+        | QuantityRef::ObjectColorCount { .. }
+        | QuantityRef::ObjectNameWordCount { .. }
+        | QuantityRef::ObjectTypelineComponentCount { .. }
+        | QuantityRef::ManaSymbolsInManaCost { .. }
+        | QuantityRef::SelfManaValue
+        | QuantityRef::TargetZoneCardCount { .. }
+        | QuantityRef::Devotion { .. }
+        | QuantityRef::CardsExiledBySource
+        | QuantityRef::ExiledCardPower { .. }
+        | QuantityRef::BasicLandTypeCount { .. }
+        | QuantityRef::TrackedSetSize
+        | QuantityRef::ExiledFromHandThisResolution
+        | QuantityRef::PreviousEffectAmount { .. }
+        | QuantityRef::PreviousEffectCount
+        | QuantityRef::LifeLostThisTurn { .. }
+        | QuantityRef::PartySize { .. }
+        | QuantityRef::UnspentMana { .. }
+        | QuantityRef::Speed { .. }
+        | QuantityRef::AttachmentsOnLeavingObject { .. }
+        | QuantityRef::EventContextAmount
+        | QuantityRef::EventContextSourceCostX
+        | QuantityRef::EventContextSourceModesChosen
+        | QuantityRef::CrimesCommittedThisTurn
+        | QuantityRef::BendTypesThisTurn
+        | QuantityRef::LifeGainedThisTurn { .. }
+        | QuantityRef::CardsDrawnThisTurn { .. }
+        | QuantityRef::LandsPlayedThisTurn { .. }
+        | QuantityRef::TurnsTaken
+        | QuantityRef::ChosenNumber
+        | QuantityRef::PlayerChosenNumber { .. }
+        | QuantityRef::DescendedThisTurn
+        | QuantityRef::LoyaltyAbilitiesActivatedThisTurn { .. }
+        | QuantityRef::SpellsCastLastTurn
+        | QuantityRef::CardsDiscardedThisTurn { .. }
+        | QuantityRef::PlayerActionsThisTurn { .. }
+        | QuantityRef::DungeonsCompleted
+        | QuantityRef::CostXPaid
+        | QuantityRef::KickerCount
+        | QuantityRef::AdditionalCostPaymentCount
+        | QuantityRef::AdditionalCostPaymentCountFor { .. }
+        | QuantityRef::ConvokedCreatureCount
+        | QuantityRef::TimesCostPaidThisResolution
+        | QuantityRef::ColorsInCommandersColorIdentity
+        | QuantityRef::CommanderCastFromCommandZoneCount
+        | QuantityRef::CommanderManaValue { .. }
+        | QuantityRef::VoteCount { .. } => {}
+    }
+}
+
+fn rewrite_card_type_set_source_filter_props(
+    source: &mut CardTypeSetSource,
+    rewrite: &mut dyn FnMut(&mut FilterProp),
+) {
+    match source {
+        CardTypeSetSource::Objects { filter } => rewrite_filter_props(filter, rewrite),
+        CardTypeSetSource::TurnJournal { filter, .. } => filter
+            .as_mut()
+            .into_iter()
+            .for_each(|inner| rewrite_filter_props(inner, rewrite)),
+        CardTypeSetSource::AnyOf { .. } => {
+            let complete = source
+                .try_for_each_member_mut(crate::types::ability::UNION_DEPTH_BUDGET, &mut |leaf| {
+                    rewrite_card_type_set_source_filter_props(leaf, rewrite)
+                });
+            assert!(complete, "validated card-type source union depth");
+        }
+        CardTypeSetSource::Zone { .. }
+        | CardTypeSetSource::ExiledBySource
+        | CardTypeSetSource::TrackedSet { .. } => {}
     }
 }
 
@@ -12561,6 +13414,273 @@ mod tests {
         assert!(!filter_contains_last_zone_changed(&typed(vec![
             FilterProp::Targets { filter: anaphor() },
         ])));
+    }
+
+    /// The chosen-type relation rewrites a property wherever the typed filter
+    /// grammar can nest it. Every positive is paired with a read before and
+    /// after the rewrite, so an omitted target/property/player crossing cannot
+    /// turn the mutation into an unobserved no-op.
+    #[test]
+    fn chosen_card_type_retargeting_is_total_over_nested_filter_topology() {
+        use crate::types::ability::{Comparator, PlayerRelation};
+        use crate::types::identifiers::TrackedSetId;
+
+        let chosen = || {
+            TargetFilter::Typed(
+                TypedFilter::creature().properties(vec![FilterProp::IsChosenCardType]),
+            )
+        };
+        let controls = |filter| PlayerFilter::ControlsCount {
+            relation: PlayerRelation::Controller,
+            filter,
+            comparator: Comparator::GE,
+            count: Box::new(QuantityExpr::Fixed { value: 1 }),
+        };
+        let tracked_possessor = |filter| PlayerFilter::TrackedSetPossessor {
+            relation: PlayerRelation::Controller,
+            possession: crate::types::ability::PossessionAxis::Controller,
+            filter,
+            caused_by: None,
+        };
+        let as_prop = |filter| FilterProp::Targets {
+            filter: Box::new(filter),
+        };
+
+        let mut cases = vec![
+            TargetFilter::And {
+                filters: vec![TargetFilter::Any, chosen()],
+            },
+            TargetFilter::Or {
+                filters: vec![TargetFilter::None, chosen()],
+            },
+            TargetFilter::Not {
+                filter: Box::new(chosen()),
+            },
+            TargetFilter::TrackedSetFiltered {
+                id: TrackedSetId(0),
+                filter: Box::new(chosen()),
+                caused_by: None,
+            },
+            TargetFilter::ChosenDamageSource {
+                filter: Some(Box::new(chosen())),
+            },
+            TargetFilter::PlayerMatching {
+                player: Box::new(controls(chosen())),
+            },
+            TargetFilter::PlayerMatching {
+                player: Box::new(tracked_possessor(chosen())),
+            },
+            TargetFilter::PlayerMatching {
+                player: Box::new(PlayerFilter::AllExcept {
+                    exclude: Box::new(controls(chosen())),
+                }),
+            },
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![
+                FilterProp::CanEnchant {
+                    target: Box::new(chosen()),
+                },
+                FilterProp::DifferentNameFrom {
+                    filter: Box::new(chosen()),
+                },
+                FilterProp::DistinctFrom {
+                    reference: Box::new(chosen()),
+                },
+                FilterProp::SharesQuality {
+                    quality: SharedQuality::Color,
+                    reference: Some(Box::new(chosen())),
+                    relation: SharedQualityRelation::default(),
+                },
+                FilterProp::Targets {
+                    filter: Box::new(chosen()),
+                },
+                FilterProp::TargetsOnly {
+                    filter: Box::new(chosen()),
+                },
+                FilterProp::Not {
+                    prop: Box::new(as_prop(chosen())),
+                },
+                FilterProp::AnyOf {
+                    props: vec![FilterProp::Token, as_prop(chosen())],
+                },
+                FilterProp::ControllerMatches {
+                    player: Box::new(controls(chosen())),
+                },
+                FilterProp::DealtDamageThisTurn {
+                    kind: DamageKindFilter::Any,
+                    recipient: Some(PlayerFilter::OpponentDealtDamage {
+                        kind: DamageKindFilter::Any,
+                        source: Some(Box::new(chosen())),
+                        min_sources: 1,
+                    }),
+                },
+            ])),
+        ];
+
+        for filter in &mut cases {
+            assert!(
+                filter_contains_filter_prop(filter, &|prop| {
+                    matches!(prop, FilterProp::IsChosenCardType)
+                }),
+                "reader must see nested chosen-card-type property in {filter:#?}"
+            );
+            retarget_chosen_card_type_to_creature_type(filter);
+            assert!(
+                !filter_contains_filter_prop(filter, &|prop| {
+                    matches!(prop, FilterProp::IsChosenCardType)
+                }),
+                "retargeting must remove every chosen-card-type property from {filter:#?}"
+            );
+            assert!(
+                filter_contains_filter_prop(filter, &|prop| {
+                    matches!(prop, FilterProp::IsChosenCreatureType)
+                }),
+                "retargeting must preserve the nested property as creature-type in {filter:#?}"
+            );
+        }
+
+        let mut control = TargetFilter::Typed(
+            TypedFilter::creature().properties(vec![FilterProp::IsChosenCreatureType]),
+        );
+        assert!(
+            !filter_contains_filter_prop(&control, &|prop| {
+                matches!(prop, FilterProp::IsChosenCardType)
+            }),
+            "control contains no card-type leaf to rewrite"
+        );
+        let before = control.clone();
+        retarget_chosen_card_type_to_creature_type(&mut control);
+        assert_eq!(
+            control, before,
+            "existing creature-type leaves stay unchanged"
+        );
+    }
+
+    #[test]
+    fn chosen_card_type_retargeting_reaches_dynamic_quantity_filters() {
+        let mut filter = TargetFilter::Typed(TypedFilter::creature().properties(vec![
+            // An existing creature-type discriminator is an unrelated control:
+            // retargeting must add the nested replacement without disturbing it.
+            FilterProp::IsChosenCreatureType,
+            FilterProp::Cmc {
+                comparator: Comparator::GE,
+                value: QuantityExpr::Ref {
+                    qty: QuantityRef::ObjectCount {
+                        filter: TargetFilter::Typed(
+                            TypedFilter::creature().properties(vec![FilterProp::IsChosenCardType]),
+                        ),
+                    },
+                },
+            },
+        ]));
+
+        assert!(
+            filter_contains_filter_prop(&filter, &|prop| {
+                matches!(prop, FilterProp::IsChosenCardType)
+            }),
+            "reader must reach chosen-card-type below a dynamic quantity filter"
+        );
+        retarget_chosen_card_type_to_creature_type(&mut filter);
+        assert!(
+            !filter_contains_filter_prop(&filter, &|prop| {
+                matches!(prop, FilterProp::IsChosenCardType)
+            }),
+            "rewriter must remove the nested chosen-card-type leaf"
+        );
+        assert!(
+            filter_contains_filter_prop(&filter, &|prop| {
+                matches!(prop, FilterProp::IsChosenCreatureType)
+            }),
+            "rewriter must retain the existing control and add the nested creature-type leaf"
+        );
+    }
+
+    /// `PlayerAttribute` carries a direct `QuantityRef` for the candidate's
+    /// attribute and a controller-relative `QuantityExpr` threshold. Both are
+    /// part of the same total FilterProp traversal: either can count a filtered
+    /// object population.
+    #[test]
+    fn chosen_card_type_retargeting_reaches_player_attribute_quantities() {
+        use crate::types::ability::PlayerRelation;
+
+        let mut filter = TargetFilter::And {
+            filters: vec![
+                // An unrelated existing discriminator must remain unchanged.
+                TargetFilter::Typed(
+                    TypedFilter::creature().properties(vec![FilterProp::IsChosenCreatureType]),
+                ),
+                TargetFilter::PlayerMatching {
+                    player: Box::new(PlayerFilter::PlayerAttribute {
+                        relation: PlayerRelation::All,
+                        attr: Box::new(QuantityRef::ObjectCount {
+                            filter: TargetFilter::Typed(
+                                TypedFilter::creature()
+                                    .properties(vec![FilterProp::IsChosenCardType]),
+                            ),
+                        }),
+                        comparator: Comparator::GE,
+                        value: Box::new(QuantityExpr::Ref {
+                            qty: QuantityRef::ObjectCount {
+                                // The existing creature-type control proves the
+                                // mutator changes only the card-type leaf.
+                                filter: TargetFilter::Typed(TypedFilter::creature().properties(
+                                    vec![
+                                        FilterProp::IsChosenCreatureType,
+                                        FilterProp::IsChosenCardType,
+                                    ],
+                                )),
+                            },
+                        }),
+                    }),
+                },
+            ],
+        };
+
+        assert!(
+            filter_contains_filter_prop(&filter, &|prop| {
+                matches!(prop, FilterProp::IsChosenCardType)
+            }),
+            "reader must reach chosen-card-type below both PlayerAttribute quantity carriers"
+        );
+        retarget_chosen_card_type_to_creature_type(&mut filter);
+        assert!(
+            !filter_contains_filter_prop(&filter, &|prop| {
+                matches!(prop, FilterProp::IsChosenCardType)
+            }),
+            "rewriter must remove card-type leaves from both PlayerAttribute quantity carriers"
+        );
+        assert_eq!(
+            filter,
+            TargetFilter::And {
+                filters: vec![
+                    TargetFilter::Typed(
+                        TypedFilter::creature().properties(vec![FilterProp::IsChosenCreatureType,])
+                    ),
+                    TargetFilter::PlayerMatching {
+                        player: Box::new(PlayerFilter::PlayerAttribute {
+                            relation: PlayerRelation::All,
+                            attr: Box::new(QuantityRef::ObjectCount {
+                                filter: TargetFilter::Typed(
+                                    TypedFilter::creature()
+                                        .properties(vec![FilterProp::IsChosenCreatureType,]),
+                                ),
+                            }),
+                            comparator: Comparator::GE,
+                            value: Box::new(QuantityExpr::Ref {
+                                qty: QuantityRef::ObjectCount {
+                                    filter: TargetFilter::Typed(
+                                        TypedFilter::creature().properties(vec![
+                                            FilterProp::IsChosenCreatureType,
+                                            FilterProp::IsChosenCreatureType,
+                                        ]),
+                                    ),
+                                },
+                            }),
+                        }),
+                    },
+                ],
+            },
+            "both quantity carriers must be rewritten while existing creature-type controls remain"
+        );
     }
 
     #[test]
