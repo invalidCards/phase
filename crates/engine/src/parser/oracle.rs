@@ -2116,19 +2116,20 @@ fn apply_linked_choice_type_statics(
                     ..
                 } = &mut result.statics[pos].mode
                 {
-                    retarget_chosen_card_type_to_creature_type(filter);
+                    if !retarget_chosen_card_type_to_creature_type(filter) {
+                        continue;
+                    }
                 }
             }
             if let Some(pos) = position_of(ability_ids, *id) {
-                retarget_creature_type_choice_dig_filters_in_ability(&mut result.abilities[pos]);
+                if !retarget_creature_type_choice_dig_filters_in_ability(&mut result.abilities[pos])
+                {
+                    continue;
+                }
             }
             if let Some(pos) = position_of(trigger_ids, *id) {
-                let trigger = &mut result.triggers[pos];
-                if let Some(valid_card) = trigger.valid_card.as_mut() {
-                    retarget_chosen_card_type_to_creature_type(valid_card);
-                }
-                if let Some(execute) = trigger.execute.as_mut() {
-                    retarget_creature_type_choice_dig_filters_in_ability(execute);
+                if !retarget_creature_type_choice_trigger_filters(&mut result.triggers[pos]) {
+                    continue;
                 }
             }
         }
@@ -2203,13 +2204,46 @@ fn chosen_subtype_kind_from_persisted_choice_items(
 /// "cards" base defaults to `IsChosenCardType`; realign a dig filter once the
 /// persisted choice is known to be creature-type. Applied per resolved consumer
 /// item by `apply_linked_choice_type_statics`.
-fn retarget_creature_type_choice_dig_filters_in_ability(def: &mut AbilityDefinition) {
+fn retarget_creature_type_choice_dig_filters_in_ability(def: &mut AbilityDefinition) -> bool {
+    let mut rewritten = def.clone();
+    let mut complete = true;
+    retarget_creature_type_choice_dig_filters_in_ability_in_place(&mut rewritten, &mut complete);
+    if complete {
+        *def = rewritten;
+    }
+    complete
+}
+
+/// In-place half of the ability-chain rewrite. The owning wrapper commits the
+/// cloned chain only when this traversal and every nested filter walk complete.
+fn retarget_creature_type_choice_dig_filters_in_ability_in_place(
+    def: &mut AbilityDefinition,
+    complete: &mut bool,
+) {
     if let Effect::Dig { filter, .. } = &mut *def.effect {
-        retarget_chosen_card_type_to_creature_type(filter);
+        *complete &= retarget_chosen_card_type_to_creature_type(filter);
     }
     if let Some(sub) = def.sub_ability.as_mut() {
-        retarget_creature_type_choice_dig_filters_in_ability(sub);
+        retarget_creature_type_choice_dig_filters_in_ability_in_place(sub, complete);
     }
+}
+
+/// Retarget both filters on a spell-cast trigger atomically. An incomplete
+/// union walk rejects the relation application instead of retaining a partially
+/// rewritten trigger.
+fn retarget_creature_type_choice_trigger_filters(trigger: &mut TriggerDefinition) -> bool {
+    let mut rewritten = trigger.clone();
+    let mut complete = true;
+    if let Some(valid_card) = rewritten.valid_card.as_mut() {
+        complete &= retarget_chosen_card_type_to_creature_type(valid_card);
+    }
+    if let Some(execute) = rewritten.execute.as_mut() {
+        complete &= retarget_creature_type_choice_dig_filters_in_ability(execute);
+    }
+    if complete {
+        *trigger = rewritten;
+    }
+    complete
 }
 
 /// CR 702.26a + CR 603.7c: Upgrade bare one-shot `PhaseOut` ETB effects that

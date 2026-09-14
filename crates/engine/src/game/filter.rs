@@ -2300,6 +2300,9 @@ fn quantity_ref_contains_filter_prop(
     }
 }
 
+/// Whether a property predicate is reachable through a card-type population.
+/// An exhausted bounded union walk is treated as a possible match, preserving
+/// the reader's conservative dependency contract.
 fn card_type_set_source_contains_filter_prop(
     source: &CardTypeSetSource,
     predicate: &dyn Fn(&FilterProp) -> bool,
@@ -2317,8 +2320,10 @@ fn card_type_set_source_contains_filter_prop(
                     contains |= card_type_set_source_contains_filter_prop(leaf, predicate);
                 },
             );
-            assert!(complete, "validated card-type source union depth");
-            contains
+            // An incomplete walk may have missed the predicate below the
+            // budget boundary. This is a dependency/capability query, where
+            // the conservative answer prevents an under-reported consumer.
+            contains || !complete
         }
         CardTypeSetSource::Zone { .. }
         | CardTypeSetSource::ExiledBySource
@@ -2330,31 +2335,54 @@ fn card_type_set_source_contains_filter_prop(
 /// creature-type discriminator. The recursive topology is deliberately shared
 /// with [`filter_contains_filter_prop`] at this module boundary: neither parser
 /// callers nor individual consumers may maintain a partial traversal.
-pub(crate) fn retarget_chosen_card_type_to_creature_type(filter: &mut TargetFilter) {
-    rewrite_filter_props(filter, &mut |prop| {
-        if matches!(prop, FilterProp::IsChosenCardType) {
-            *prop = FilterProp::IsChosenCreatureType;
-        }
-    });
+///
+/// Returns `false` when a bounded `CardTypeSetSource::AnyOf` walk was
+/// incomplete. In that case `filter` is left untouched: applying only the
+/// reachable prefix would silently produce a mixed card-type / creature-type
+/// discriminator.
+pub(crate) fn retarget_chosen_card_type_to_creature_type(filter: &mut TargetFilter) -> bool {
+    let mut rewritten = filter.clone();
+    let mut complete = true;
+    rewrite_filter_props(
+        &mut rewritten,
+        &mut |prop| {
+            if matches!(prop, FilterProp::IsChosenCardType) {
+                *prop = FilterProp::IsChosenCreatureType;
+            }
+        },
+        &mut complete,
+    );
+    if complete {
+        *filter = rewritten;
+    }
+    complete
 }
 
-fn rewrite_filter_props(filter: &mut TargetFilter, rewrite: &mut dyn FnMut(&mut FilterProp)) {
+/// Rewrite every property reachable through `filter`, recording any incomplete
+/// bounded population walk in `complete` for the transactional caller.
+fn rewrite_filter_props(
+    filter: &mut TargetFilter,
+    rewrite: &mut dyn FnMut(&mut FilterProp),
+    complete: &mut bool,
+) {
     match filter {
         TargetFilter::And { filters } | TargetFilter::Or { filters } => filters
             .iter_mut()
-            .for_each(|inner| rewrite_filter_props(inner, rewrite)),
+            .for_each(|inner| rewrite_filter_props(inner, rewrite, complete)),
         TargetFilter::Not { filter } | TargetFilter::TrackedSetFiltered { filter, .. } => {
-            rewrite_filter_props(filter, rewrite)
+            rewrite_filter_props(filter, rewrite, complete)
         }
-        TargetFilter::PlayerMatching { player } => rewrite_player_filter_props(player, rewrite),
+        TargetFilter::PlayerMatching { player } => {
+            rewrite_player_filter_props(player, rewrite, complete)
+        }
         TargetFilter::ChosenDamageSource { filter } => filter
             .as_deref_mut()
             .into_iter()
-            .for_each(|inner| rewrite_filter_props(inner, rewrite)),
+            .for_each(|inner| rewrite_filter_props(inner, rewrite, complete)),
         TargetFilter::Typed(typed) => typed
             .properties
             .iter_mut()
-            .for_each(|prop| rewrite_filter_prop(prop, rewrite)),
+            .for_each(|prop| rewrite_filter_prop(prop, rewrite, complete)),
         TargetFilter::None
         | TargetFilter::Any
         | TargetFilter::Player
@@ -2408,32 +2436,41 @@ fn rewrite_filter_props(filter: &mut TargetFilter, rewrite: &mut dyn FnMut(&mut 
     }
 }
 
-fn rewrite_filter_prop(prop: &mut FilterProp, rewrite: &mut dyn FnMut(&mut FilterProp)) {
+/// Rewrite one property and every nested filter-bearing payload it owns.
+fn rewrite_filter_prop(
+    prop: &mut FilterProp,
+    rewrite: &mut dyn FnMut(&mut FilterProp),
+    complete: &mut bool,
+) {
     rewrite(prop);
     match prop {
-        FilterProp::CanEnchant { target } => rewrite_filter_props(target, rewrite),
-        FilterProp::DifferentNameFrom { filter } => rewrite_filter_props(filter, rewrite),
-        FilterProp::DistinctFrom { reference } => rewrite_filter_props(reference, rewrite),
+        FilterProp::CanEnchant { target } => rewrite_filter_props(target, rewrite, complete),
+        FilterProp::DifferentNameFrom { filter } => rewrite_filter_props(filter, rewrite, complete),
+        FilterProp::DistinctFrom { reference } => {
+            rewrite_filter_props(reference, rewrite, complete)
+        }
         FilterProp::SharesQuality { reference, .. } => reference
             .as_deref_mut()
             .into_iter()
-            .for_each(|inner| rewrite_filter_props(inner, rewrite)),
+            .for_each(|inner| rewrite_filter_props(inner, rewrite, complete)),
         FilterProp::Targets { filter } | FilterProp::TargetsOnly { filter } => {
-            rewrite_filter_props(filter, rewrite)
+            rewrite_filter_props(filter, rewrite, complete)
         }
-        FilterProp::Not { prop } => rewrite_filter_prop(prop, rewrite),
+        FilterProp::Not { prop } => rewrite_filter_prop(prop, rewrite, complete),
         FilterProp::AnyOf { props } => props
             .iter_mut()
-            .for_each(|inner| rewrite_filter_prop(inner, rewrite)),
-        FilterProp::ControllerMatches { player } => rewrite_player_filter_props(player, rewrite),
+            .for_each(|inner| rewrite_filter_prop(inner, rewrite, complete)),
+        FilterProp::ControllerMatches { player } => {
+            rewrite_player_filter_props(player, rewrite, complete)
+        }
         FilterProp::DealtDamageThisTurn { recipient, .. } => recipient
             .as_mut()
             .into_iter()
-            .for_each(|scope| rewrite_player_filter_props(scope, rewrite)),
+            .for_each(|scope| rewrite_player_filter_props(scope, rewrite, complete)),
         FilterProp::Counters { count, .. }
         | FilterProp::Cmc { value: count, .. }
         | FilterProp::PtComparison { value: count, .. } => {
-            rewrite_quantity_expr_filter_props(count, rewrite)
+            rewrite_quantity_expr_filter_props(count, rewrite, complete)
         }
         FilterProp::Token
         | FilterProp::NonToken
@@ -2525,25 +2562,31 @@ fn rewrite_filter_prop(prop: &mut FilterProp, rewrite: &mut dyn FnMut(&mut Filte
     }
 }
 
+/// Rewrite nested property carriers in a player filter.
 fn rewrite_player_filter_props(
     filter: &mut PlayerFilter,
     rewrite: &mut dyn FnMut(&mut FilterProp),
+    complete: &mut bool,
 ) {
     match filter {
         PlayerFilter::OpponentDealtDamage { source, .. } => source
             .as_deref_mut()
             .into_iter()
-            .for_each(|inner| rewrite_filter_props(inner, rewrite)),
+            .for_each(|inner| rewrite_filter_props(inner, rewrite, complete)),
         PlayerFilter::ControlsCount { filter, count, .. } => {
-            rewrite_filter_props(filter, rewrite);
-            rewrite_quantity_expr_filter_props(count, rewrite);
+            rewrite_filter_props(filter, rewrite, complete);
+            rewrite_quantity_expr_filter_props(count, rewrite, complete);
         }
         PlayerFilter::PlayerAttribute { attr, value, .. } => {
-            rewrite_quantity_ref_filter_props(attr, rewrite);
-            rewrite_quantity_expr_filter_props(value, rewrite);
+            rewrite_quantity_ref_filter_props(attr, rewrite, complete);
+            rewrite_quantity_expr_filter_props(value, rewrite, complete);
         }
-        PlayerFilter::TrackedSetPossessor { filter, .. } => rewrite_filter_props(filter, rewrite),
-        PlayerFilter::AllExcept { exclude } => rewrite_player_filter_props(exclude, rewrite),
+        PlayerFilter::TrackedSetPossessor { filter, .. } => {
+            rewrite_filter_props(filter, rewrite, complete)
+        }
+        PlayerFilter::AllExcept { exclude } => {
+            rewrite_player_filter_props(exclude, rewrite, complete)
+        }
         PlayerFilter::Controller
         | PlayerFilter::Opponent
         | PlayerFilter::DefendingPlayer
@@ -2574,9 +2617,10 @@ fn rewrite_player_filter_props(
 fn rewrite_quantity_expr_filter_props(
     expr: &mut QuantityExpr,
     rewrite: &mut dyn FnMut(&mut FilterProp),
+    complete: &mut bool,
 ) {
     match expr {
-        QuantityExpr::Ref { qty } => rewrite_quantity_ref_filter_props(qty, rewrite),
+        QuantityExpr::Ref { qty } => rewrite_quantity_ref_filter_props(qty, rewrite, complete),
         QuantityExpr::DivideRounded { inner, .. }
         | QuantityExpr::Offset { inner, .. }
         | QuantityExpr::ClampMin { inner, .. }
@@ -2584,13 +2628,13 @@ fn rewrite_quantity_expr_filter_props(
         | QuantityExpr::UpTo { max: inner }
         | QuantityExpr::Power {
             exponent: inner, ..
-        } => rewrite_quantity_expr_filter_props(inner, rewrite),
+        } => rewrite_quantity_expr_filter_props(inner, rewrite, complete),
         QuantityExpr::Sum { exprs } | QuantityExpr::Max { exprs } => exprs
             .iter_mut()
-            .for_each(|inner| rewrite_quantity_expr_filter_props(inner, rewrite)),
+            .for_each(|inner| rewrite_quantity_expr_filter_props(inner, rewrite, complete)),
         QuantityExpr::Difference { left, right } => {
-            rewrite_quantity_expr_filter_props(left, rewrite);
-            rewrite_quantity_expr_filter_props(right, rewrite);
+            rewrite_quantity_expr_filter_props(left, rewrite, complete);
+            rewrite_quantity_expr_filter_props(right, rewrite, complete);
         }
         QuantityExpr::Fixed { .. } => {}
     }
@@ -2601,6 +2645,7 @@ fn rewrite_quantity_expr_filter_props(
 fn rewrite_quantity_ref_filter_props(
     qty: &mut QuantityRef,
     rewrite: &mut dyn FnMut(&mut FilterProp),
+    complete: &mut bool,
 ) {
     match qty {
         QuantityRef::ObjectCount { filter }
@@ -2616,18 +2661,18 @@ fn rewrite_quantity_ref_filter_props(
         | QuantityRef::CounterAddedThisTurn { target: filter, .. }
         | QuantityRef::TokensCreatedThisTurn { filter, .. }
         | QuantityRef::DistinctCounterKindsAmong { filter } => {
-            rewrite_filter_props(filter, rewrite)
+            rewrite_filter_props(filter, rewrite, complete)
         }
         QuantityRef::TargetObjectManaValue { filter }
         | QuantityRef::FilteredTrackedSetSize { filter, .. } => {
-            rewrite_filter_props(filter, rewrite)
+            rewrite_filter_props(filter, rewrite, complete)
         }
         QuantityRef::PlayerCount { filter } | QuantityRef::EventContextPlayerCount { filter } => {
-            rewrite_player_filter_props(filter, rewrite)
+            rewrite_player_filter_props(filter, rewrite, complete)
         }
         QuantityRef::PropertyAggregate(aggregate) => {
             let mut source = aggregate.source().clone();
-            rewrite_card_type_set_source_filter_props(&mut source, rewrite);
+            rewrite_card_type_set_source_filter_props(&mut source, rewrite, complete);
             *aggregate = crate::types::ability::PropertyAggregate::new(
                 aggregate.function(),
                 aggregate.property(),
@@ -2638,7 +2683,7 @@ fn rewrite_quantity_ref_filter_props(
         QuantityRef::DistinctCardTypes { source }
         | QuantityRef::DistinctSubtypes { source, .. }
         | QuantityRef::DistinctColorsAmong { source } => {
-            rewrite_card_type_set_source_filter_props(source, rewrite)
+            rewrite_card_type_set_source_filter_props(source, rewrite, complete)
         }
         QuantityRef::ZoneCardCount { filter, .. }
         | QuantityRef::SpellsCastThisTurn { filter, .. }
@@ -2647,14 +2692,14 @@ fn rewrite_quantity_ref_filter_props(
         | QuantityRef::SpellsCastThisGame { filter, .. } => filter
             .as_mut()
             .into_iter()
-            .for_each(|inner| rewrite_filter_props(inner, rewrite)),
+            .for_each(|inner| rewrite_filter_props(inner, rewrite, complete)),
         QuantityRef::DamageDealtThisTurn { source, target, .. } => {
-            rewrite_filter_props(source, rewrite);
-            rewrite_filter_props(target, rewrite);
+            rewrite_filter_props(source, rewrite, complete);
+            rewrite_filter_props(target, rewrite, complete);
         }
         QuantityRef::ManaSpentToCast { metric, .. } => match metric {
             CastManaSpentMetric::FromSource { source_filter } => {
-                rewrite_filter_props(source_filter, rewrite)
+                rewrite_filter_props(source_filter, rewrite, complete)
             }
             CastManaSpentMetric::Total
             | CastManaSpentMetric::DistinctColors
@@ -2726,22 +2771,25 @@ fn rewrite_quantity_ref_filter_props(
     }
 }
 
+/// Rewrite nested property carriers in a card-type population, recording an
+/// incomplete bounded union walk instead of assuming it was exhaustive.
 fn rewrite_card_type_set_source_filter_props(
     source: &mut CardTypeSetSource,
     rewrite: &mut dyn FnMut(&mut FilterProp),
+    complete: &mut bool,
 ) {
     match source {
-        CardTypeSetSource::Objects { filter } => rewrite_filter_props(filter, rewrite),
+        CardTypeSetSource::Objects { filter } => rewrite_filter_props(filter, rewrite, complete),
         CardTypeSetSource::TurnJournal { filter, .. } => filter
             .as_mut()
             .into_iter()
-            .for_each(|inner| rewrite_filter_props(inner, rewrite)),
+            .for_each(|inner| rewrite_filter_props(inner, rewrite, complete)),
         CardTypeSetSource::AnyOf { .. } => {
-            let complete = source
+            let source_complete = source
                 .try_for_each_member_mut(crate::types::ability::UNION_DEPTH_BUDGET, &mut |leaf| {
-                    rewrite_card_type_set_source_filter_props(leaf, rewrite)
+                    rewrite_card_type_set_source_filter_props(leaf, rewrite, complete)
                 });
-            assert!(complete, "validated card-type source union depth");
+            *complete &= source_complete;
         }
         CardTypeSetSource::Zone { .. }
         | CardTypeSetSource::ExiledBySource
@@ -13523,7 +13571,10 @@ mod tests {
                 }),
                 "reader must see nested chosen-card-type property in {filter:#?}"
             );
-            retarget_chosen_card_type_to_creature_type(filter);
+            assert!(
+                retarget_chosen_card_type_to_creature_type(filter),
+                "ordinary nested filter topology must be completely traversable"
+            );
             assert!(
                 !filter_contains_filter_prop(filter, &|prop| {
                     matches!(prop, FilterProp::IsChosenCardType)
@@ -13548,7 +13599,10 @@ mod tests {
             "control contains no card-type leaf to rewrite"
         );
         let before = control.clone();
-        retarget_chosen_card_type_to_creature_type(&mut control);
+        assert!(
+            retarget_chosen_card_type_to_creature_type(&mut control),
+            "a leaf filter must be completely traversable"
+        );
         assert_eq!(
             control, before,
             "existing creature-type leaves stay unchanged"
@@ -13579,7 +13633,10 @@ mod tests {
             }),
             "reader must reach chosen-card-type below a dynamic quantity filter"
         );
-        retarget_chosen_card_type_to_creature_type(&mut filter);
+        assert!(
+            retarget_chosen_card_type_to_creature_type(&mut filter),
+            "a dynamic quantity filter without unions must be completely traversable"
+        );
         assert!(
             !filter_contains_filter_prop(&filter, &|prop| {
                 matches!(prop, FilterProp::IsChosenCardType)
@@ -13641,7 +13698,10 @@ mod tests {
             }),
             "reader must reach chosen-card-type below both PlayerAttribute quantity carriers"
         );
-        retarget_chosen_card_type_to_creature_type(&mut filter);
+        assert!(
+            retarget_chosen_card_type_to_creature_type(&mut filter),
+            "PlayerAttribute quantity carriers without unions must be completely traversable"
+        );
         assert!(
             !filter_contains_filter_prop(&filter, &|prop| {
                 matches!(prop, FilterProp::IsChosenCardType)
@@ -13680,6 +13740,66 @@ mod tests {
                 ],
             },
             "both quantity carriers must be rewritten while existing creature-type controls remain"
+        );
+    }
+
+    /// A card-type population union may be deeply nested in persisted or
+    /// hand-authored data even though printed card text produces shallow trees.
+    /// Its bounded walker must make readers conservative and reject a rewrite
+    /// without committing the reachable prefix.
+    #[test]
+    fn chosen_card_type_retargeting_rejects_incomplete_card_type_set_source() {
+        use crate::types::ability::CardTypeSetSource;
+
+        let chosen = || {
+            TargetFilter::Typed(
+                TypedFilter::creature().properties(vec![FilterProp::IsChosenCardType]),
+            )
+        };
+        let nested_source = |visible_filter: TargetFilter| {
+            let mut source = CardTypeSetSource::Objects { filter: chosen() };
+            for _ in 0..crate::types::ability::UNION_DEPTH_BUDGET {
+                source = CardTypeSetSource::any_of(vec![
+                    source,
+                    CardTypeSetSource::Objects {
+                        filter: visible_filter.clone(),
+                    },
+                ])
+                .expect("two sources form a population union");
+            }
+            source
+        };
+        let type_count_filter = |source| {
+            TargetFilter::Typed(TypedFilter::creature().properties(vec![FilterProp::Cmc {
+                comparator: Comparator::GE,
+                value: QuantityExpr::Ref {
+                    qty: QuantityRef::DistinctCardTypes { source },
+                },
+            }]))
+        };
+
+        // The only matching leaf lies below the budget. The query must report
+        // a possible read rather than claim the filter is unrelated.
+        let conservative = type_count_filter(nested_source(TargetFilter::Any));
+        assert!(
+            filter_contains_filter_prop(&conservative, &|prop| {
+                matches!(prop, FilterProp::IsChosenCardType)
+            }),
+            "an incomplete population walk must conservatively report a possible property"
+        );
+
+        // Reachable sibling leaves make a partial mutation observable. The
+        // transactional rewrite must reject the incomplete source and retain
+        // the complete original filter instead.
+        let mut rejected = type_count_filter(nested_source(chosen()));
+        let before = rejected.clone();
+        assert!(
+            !retarget_chosen_card_type_to_creature_type(&mut rejected),
+            "a source deeper than the union budget must reject retargeting"
+        );
+        assert_eq!(
+            rejected, before,
+            "rejecting an incomplete source must not commit a partial rewrite"
         );
     }
 
